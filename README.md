@@ -47,6 +47,19 @@ git clone https://github.com/ceres-solver/ceres-solver.git -b 1.14.0
 cd ceres-solver && mkdir build && cd build
 cmake .. -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF && make -j$(nproc) && make install
 
+# 1. 确保所有编译依赖都已安装
+apt-get update && apt-get install -y libgoogle-glog-dev libgflags-dev libatlas-base-dev libsuitesparse-dev
+
+# 2. 从GitHub克隆Ceres 2.1.0版本
+cd /root/
+git clone https://github.com/ceres-solver/ceres-solver.git -b 2.1.0
+
+# 3. 编译并安装
+cd ceres-solver && mkdir build && cd build
+cmake .. -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF
+make -j$(nproc)
+make install
+
 # --- 编译 Livox-SDK ---
 # (我们将把它直接克隆到工作区里，然后编译)
 
@@ -71,7 +84,12 @@ cd /root/projects/ligo_ws/
 # 编译
 catkin_make -j2
 
+cd /root/projects/ligo_ws/
+# 我们需要先source一下基础ROS环境，来找到catkin_make
+. /opt/ros/noetic/setup.bash
+catkin_make -j4
 
+echo "source /opt/ros/noetic/setup.bash" >> /root/.bashrc
 echo "source /root/projects/ligo_ws/devel/setup.bash" >> /root/.bashrc
 source /root/.bashrc
 
@@ -81,3 +99,14 @@ apt-get update
 
 # 安装libdw的开发包
 apt-get install -y libdw-dev
+
+
+roslaunch ligo mapping_velody16.launch
+source /root/.bashrc
+cd /root/projects/
+# 下载并准备好数据包后，按顺序播放
+# rosbag play TST_M8N_... .bag
+# rosbag play 2019-04-28-....bag --clock
+cd /root/projects/
+rosbag play TST_M8N_2024-03-06-20-37-17.bag
+rosbag play 2019-04-28-20-58-02.bag --clock
