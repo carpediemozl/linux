@@ -1,5 +1,5 @@
 xhost +
-docker run -it --rm \
+docker run -d \
   --gpus all \
   --network=host \
   -e DISPLAY=:1 \
@@ -21,13 +21,15 @@ rm -rf ~/projects
 # 4. 重新创建干净的共享文件夹
 mkdir -p ~/projects
 
+docker ps -a
+docker exec -it ligo_dev bash
 
 apt-get update
 apt-get install -y git nano wget \
                    libeigen3-dev libpcl-dev libboost-all-dev libopencv-dev \
                    libmetis-dev libfmt-dev \
                    libgoogle-glog-dev libgflags-dev libatlas-base-dev libsuitesparse-dev
-
+apt-get install -y ros-noetic-pcl-ros
 # --- 编译 GTSAM ---
 cd /root/
 git clone https://github.com/borglab/gtsam.git -b 4.2.0
@@ -53,12 +55,8 @@ apt-get update && apt-get install -y libgoogle-glog-dev libgflags-dev libatlas-b
 # 2. 从GitHub克隆Ceres 2.1.0版本
 cd /root/
 git clone https://github.com/ceres-solver/ceres-solver.git -b 2.1.0
-
-# 3. 编译并安装
 cd ceres-solver && mkdir build && cd build
-cmake .. -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF
-make -j$(nproc)
-make install
+cmake .. -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF && make -j$(nproc) && make install
 
 # --- 编译 Livox-SDK ---
 # (我们将把它直接克隆到工作区里，然后编译)
@@ -81,13 +79,11 @@ cmake .. && make -j$(nproc) && make install
 # 回到工作区根目录
 cd /root/projects/ligo_ws/
 
-# 编译
-catkin_make -j2
-
-cd /root/projects/ligo_ws/
-# 我们需要先source一下基础ROS环境，来找到catkin_make
+激活ros1
 . /opt/ros/noetic/setup.bash
-catkin_make -j4
+catkin_make
+rm -rf build/ devel/
+
 
 echo "source /opt/ros/noetic/setup.bash" >> /root/.bashrc
 echo "source /root/projects/ligo_ws/devel/setup.bash" >> /root/.bashrc
@@ -100,13 +96,23 @@ apt-get update
 # 安装libdw的开发包
 apt-get install -y libdw-dev
 
+ldconfig
+
+docker exec -it ligo_dev bash
+cd /root/projects/ligo_ws
 
 roslaunch ligo mapping_velody16.launch
+roslaunch ligo mapping_avia.launch
+
 source /root/.bashrc
 cd /root/projects/
+rosbag play bridge.bag --clock
+rosbag play deg1.bag --clock
+rosbag play out.bag --clock
 # 下载并准备好数据包后，按顺序播放
 # rosbag play TST_M8N_... .bag
 # rosbag play 2019-04-28-....bag --clock
 cd /root/projects/
 rosbag play TST_M8N_2024-03-06-20-37-17.bag
 rosbag play 2019-04-28-20-58-02.bag --clock
+rosbag play bridge.bag --clock
