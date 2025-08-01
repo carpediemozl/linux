@@ -101,6 +101,7 @@ ldconfig
 docker exec -it ligo_dev bash
 cd /root/projects/ligo_ws
 
+xhost +
 roslaunch ligo mapping_velody16.launch
 roslaunch ligo mapping_avia.launch
 
