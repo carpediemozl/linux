@@ -102,7 +102,7 @@ docker exec -it ligo_dev bash
 cd /root/projects/ligo_ws
 
 xhost +
-roslaunch ligo mapping_velody16.launch
+
 roslaunch ligo mapping_avia.launch
 
 source /root/.bashrc
@@ -117,3 +117,15 @@ cd /root/projects/
 rosbag play TST_M8N_2024-03-06-20-37-17.bag
 rosbag play 2019-04-28-20-58-02.bag --clock
 rosbag play bridge.bag --clock
+
+roslaunch ligo mapping_velody16.launch
+rosbag play TST_M8N_2024-03-06-20-37-17.bag
+rosbag play 2019-04-28-20-58-02.bag --clock
+rosbag reindex 2019-04-28-20-58-02.bag
+rosbag reindex UrbanNav-HK_TST-20210517_sensors.bag
+rosbag play UrbanNav-HK_TST-20210517_sensors.bag --clock
+sudo apt install p7zip-full 
+7z x UrbanNav-HK_Whampoa-20210521_sensors.zip
+rosbag play Whampoa_2024-02-18-22-09-29.bag
+rosbag reindex UrbanNav-HK_Whampoa-20210521_sensors.bag
+rosbag play UrbanNav-HK_Whampoa-20210521_sensors.bag --clock
