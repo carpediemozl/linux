@@ -1,0 +1,5 @@
+git status
+
+git add .
+git commit -m "Feat: Refactor all visual pipelines to modern DepthAI API"
+git push
