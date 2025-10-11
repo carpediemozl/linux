@@ -1,0 +1,21 @@
+从roboflow上下载数据集
+地址https://universe.roboflow.com/student-esos5/traffic-light-v9orl
+
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+
+pip install ultralytics
+
+训练时没有用上显卡
+cuda version==12.6
+
+重新创建虚拟环境
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+
+pip list | findstr "torch"
+查看安装的torch版本 
+blind_cane_yolov8是
+(.venv) PS D:\codefield\blind_cane_yolov8> pip list | findstr "torch"
+torch                   2.5.1+cu121
+torchaudio              2.5.1+cu121
+torchvision             0.20.1+cu121
