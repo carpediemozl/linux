@@ -46,3 +46,6 @@ pip install blobconverter
 }
 
 blobconverter --onnx-model "runs\detect\traffic_light_exp2\weights\best.onnx" -sh 6 --data-type FP16 -o . -rawc yolov8_config.json
+
+v5
+blobconverter --onnx-model "runs\detect\traffic_light_expv5n\weights\best.onnx" -sh 6 --data-type FP16  
