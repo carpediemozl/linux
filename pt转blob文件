@@ -1,1 +1,48 @@
+export_model.py
 
+from ultralytics import YOLO
+
+def main():
+    # 1. 定义输入和输出路径
+    #    指向我们刚刚训练好的 best.pt 模型
+    pt_model_path = r'runs\detect\traffic_light_exp2\weights\best.pt'
+    
+    # 2. 加载模型
+    print(f"正在加载模型: {pt_model_path}")
+    model = YOLO(pt_model_path)
+
+    # 3. 导出为 ONNX 格式
+    #    imgsz 必须与您训练时的尺寸完全一致！
+    print("正在将模型导出为 ONNX 格式 (imgsz=416)...")
+    output_path = model.export(format='onnx', imgsz=416)
+    
+    print(f"\n导出成功！ONNX 模型已保存到: {output_path}")
+
+if __name__ == '__main__':
+    main()
+
+pt转onnx
+
+onnx转blob
+pip install blobconverter
+
+{
+    "nn_config": {
+        "output_format": "detection",
+        "NN_family": "YOLO",
+        "input_size": "416x416",
+        "confidence_threshold": 0.5,
+        "iou_threshold": 0.5,
+        "classes": 3,
+        "meta": {
+            "version": "v8"
+        }
+    },
+    "mappings": {
+        "labels": [
+            "Green", "Red", "Yellow"
+        ]
+    }
+}
+
+blobconverter --onnx-model "runs\detect\traffic_light_exp2\weights\best.onnx" -sh 6 --data-type FP16 -o . -rawc yolov8_config.json
