@@ -19,3 +19,7 @@ blind_cane_yolov8是
 torch                   2.5.1+cu121
 torchaudio              2.5.1+cu121
 torchvision             0.20.1+cu121
+
+
+通过使用yolov5的仓库 
+修改yolov5.yaml文件里的forward写法 实现了输出层符合oakd的格式
