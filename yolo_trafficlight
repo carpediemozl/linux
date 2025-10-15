@@ -23,3 +23,88 @@ torchvision             0.20.1+cu121
 
 通过使用yolov5的仓库 
 修改yolov5.yaml文件里的forward写法 实现了输出层符合oakd的格式
+1.修改export里的337行代码
+    #output_names = ["output0", "output1"] if isinstance(model, SegmentationModel) else ["output0"]
+    # 如果是 DetectionModel，输出三层
+    if isinstance(model, DetectionModel):
+        output_names = ["output0", "output1", "output2"]
+        model.model[-1].export = True
+    else:
+        output_names = ["output0", "output1"] if isinstance(model, SegmentationModel) else ["output0"]
+
+2.修改yolov5.yaml里的forward写法
+    def forward(self, x):
+        '''
+        """Processes input through YOLOv5 layers, altering shape for detection: `x(bs, 3, ny, nx, 85)`."""
+        z = []  # inference output
+        for i in range(self.nl):
+            x[i] = self.m[i](x[i])  # conv
+            bs, _, ny, nx = x[i].shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
+            x[i] = x[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
+
+            if not self.training:  # inference
+                if self.dynamic or self.grid[i].shape[2:4] != x[i].shape[2:4]:
+                    self.grid[i], self.anchor_grid[i] = self._make_grid(nx, ny, i)
+
+                if isinstance(self, Segment):  # (boxes + masks)
+                    xy, wh, conf, mask = x[i].split((2, 2, self.nc + 1, self.no - self.nc - 5), 4)
+                    xy = (xy.sigmoid() * 2 + self.grid[i]) * self.stride[i]  # xy
+                    wh = (wh.sigmoid() * 2) ** 2 * self.anchor_grid[i]  # wh
+                    y = torch.cat((xy, wh, conf.sigmoid(), mask), 4)
+                else:  # Detect (boxes only)
+                    xy, wh, conf = x[i].sigmoid().split((2, 2, self.nc + 1), 4)
+                    xy = (xy * 2 + self.grid[i]) * self.stride[i]  # xy
+                    wh = (wh * 2) ** 2 * self.anchor_grid[i]  # wh
+                    y = torch.cat((xy, wh, conf), 4)
+                z.append(y.view(bs, self.na * nx * ny, self.no))
+
+        #return x if self.training else (torch.cat(z, 1),) if self.export else (torch.cat(z, 1), x)
+        # ...existing code...
+        #return x if self.training else tuple(z) if self.export else (torch.cat(z, 1), x)
+        # ...existing code...
+        # 最终的、完美的版本
+        return tuple(x)
+        '''
+        """Processes input through the YOLOv5 detection head."""
+        # x is a list of 3 tensors (features) from the P3, P4, and P5 layers
+        
+        # --- 【最终的、决定性的“维度重塑”手术】 ---
+        # 检查是否处于导出模式
+        if self.export:
+            # 1. 创建一个新的列表，用于存放重塑后的张量
+            reshaped_outputs = []
+            
+            # 2. 遍历原始的三层输入 x
+            for i in range(self.nl):
+                # 应用该层的 1x1 卷积
+                conv_output = self.m[i](x[i])
+                
+                # 原始形状: [bs, na * no, ny, nx], 例如 [1, 24, 52, 52]
+                # 这已经是我们想要的最终形状了！
+                # 在v5.0的这个版本里，self.m[i]的输出直接就是我们需要的格式。
+                # 我们不需要进行复杂的 reshape 或 permute。
+                
+                # 3. 将最终的张量添加到新列表中
+                reshaped_outputs.append(conv_output)
+            
+            # 4. 返回包含三个、形状完全正确的张量的元组
+            return tuple(reshaped_outputs)
+
+        # --- 在非导出模式下，保持原有的、用于训练和验证的逻辑 ---
+        z = []  # inference output
+        for i in range(self.nl):
+            x[i] = self.m[i](x[i])  # conv
+            bs, _, ny, nx = x[i].shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
+            x[i] = x[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
+
+            if not self.training:  # inference
+                if self.dynamic or self.grid[i].shape[2:4] != x[i].shape[2:4]:
+                    self.grid[i], self.anchor_grid[i] = self._make_grid(nx, ny, i)
+
+                xy, wh, conf = x[i].sigmoid().split((2, 2, self.no - 4), 4)
+                xy = (xy * 2 + self.grid[i]) * self.stride[i]  # xy
+                wh = (wh * 2) ** 2 * self.anchor_grid[i]  # wh
+                y = torch.cat((xy, wh, conf), 4)
+                z.append(y.view(bs, self.na * nx * ny, self.no))
+
+        return x if self.training else (torch.cat(z, 1), x)
