@@ -1,0 +1,7 @@
+安装python 3.9.13
+创建venv_3.9虚拟环境
+# 运行这条包含了所有精确版本约束的“黄金命令”
+python -m pip install "numpy<2.0" "opencv-python==4.8.0.74" torch==1.12.1+cu116 torchvision==0.13.1+cu116 torchaudio==0.12.1 --extra-index-url https://download.pytorch.org/whl/cu116
+python -m pip install matplotlib PyYAML requests scipy tqdm pandas seaborn thop einops timm
+python -m pip install tensorflow==2.10.0
+python export.py --weights runs/train/both_yolov5_c2f_faster_0/weights/best.pt --imgsz 416 --include onnx --opset 12 --simplify
