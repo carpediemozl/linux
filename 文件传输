@@ -1,204 +1,147 @@
-import cv2
 import depthai as dai
+import cv2
 import numpy as np
-import time
 
-# --- 1. 核心参数 ---
+"""
+Blob 模型诊断工具
+用于检查模型输出格式和配置是否匹配
+"""
+
 MODEL_PATH = 'models/knottedblob/knottedtraffic1016.blob'
-LABEL_MAP = ['red', 'yellow', 'green']
-NN_INPUT_SIZE = 416
 
-# --- 2. 构建Pipeline ---
-print("正在构建Pipeline (修复版)...")
+print("=" * 60)
+print("Blob 模型诊断工具")
+print("=" * 60)
+
+# 创建简单的测试 pipeline
 pipeline = dai.Pipeline()
 
-# --- 定义节点 ---
-cam_rgb = pipeline.create(dai.node.ColorCamera)
-monoLeft = pipeline.create(dai.node.MonoCamera)
-monoRight = pipeline.create(dai.node.MonoCamera)
-stereo = pipeline.create(dai.node.StereoDepth)
-spatial_nn = pipeline.create(dai.node.YoloSpatialDetectionNetwork)
+# RGB 相机
+cam = pipeline.create(dai.node.ColorCamera)
+cam.setPreviewSize(416, 416)
+cam.setInterleaved(False)
 
-xout_rgb = pipeline.create(dai.node.XLinkOut)
-xout_rgb.setStreamName("rgb")
+# 神经网络节点（使用基础 NeuralNetwork 而非 YoloSpatialDetectionNetwork）
+nn = pipeline.create(dai.node.NeuralNetwork)
+nn.setBlobPath(MODEL_PATH)
+
+# 输出
 xout_nn = pipeline.create(dai.node.XLinkOut)
-xout_nn.setStreamName("detections")
+xout_nn.setStreamName("nn")
 
-# --- 配置节点 ---
-cam_rgb.setPreviewSize(NN_INPUT_SIZE, NN_INPUT_SIZE)
-cam_rgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
-cam_rgb.setInterleaved(False)
-cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
+# 链接
+cam.preview.link(nn.input)
+nn.out.link(xout_nn.input)
 
-monoLeft.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
-monoLeft.setBoardSocket(dai.CameraBoardSocket.LEFT)
-monoRight.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
-monoRight.setBoardSocket(dai.CameraBoardSocket.RIGHT)
-
-stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
-stereo.setLeftRightCheck(True)
-stereo.setSubpixel(True)
-stereo.setDepthAlign(dai.CameraBoardSocket.RGB)
-
-# === 关键配置：修复 NMS ===
-spatial_nn.setBlobPath(MODEL_PATH)
-
-# 降低置信度阈值，让 NMS 发挥作用
-spatial_nn.setConfidenceThreshold(0.3)  # 从 0.5 降到 0.3
-
-spatial_nn.input.setBlocking(False)
-spatial_nn.setBoundingBoxScaleFactor(0.5)
-spatial_nn.setDepthLowerThreshold(100)
-spatial_nn.setDepthUpperThreshold(10000)
-
-# YOLO 参数
-spatial_nn.setNumClasses(3)
-spatial_nn.setCoordinateSize(4)
-
-# YOLOv5n 标准锚框 (416x416)
-spatial_nn.setAnchors([10, 13, 16, 30, 33, 23, 30, 61, 62, 45, 59, 119, 116, 90, 156, 198, 373, 326])
-
-# === 关键：正确的锚框遮罩 ===
-# 对于输出格式 [1, 24, 52, 52] 这样的通道优先格式
-# 尝试以下几种配置（取消注释测试）
-
-# 配置 1：标准命名
-spatial_nn.setAnchorMasks({"side52": [0, 1, 2], "side26": [3, 4, 5], "side13": [6, 7, 8]})
-
-# 配置 2：使用输出层名称（如果配置1不行，注释掉配置1，取消注释这个）
-# spatial_nn.setAnchorMasks({"output0": [0, 1, 2], "output1": [3, 4, 5], "output2": [6, 7, 8]})
-
-# 配置 3：完全不设置（让 DepthAI 自动解析）
-# 注释掉上面的 setAnchors 和 setAnchorMasks
-
-# === 关键：IoU 阈值调整 ===
-# 提高 IoU 阈值可以减少重复框
-spatial_nn.setIouThreshold(0.6)  # 从 0.5 提高到 0.6
-
-# --- 链接节点 ---
-monoLeft.out.link(stereo.left)
-monoRight.out.link(stereo.right)
-cam_rgb.preview.link(spatial_nn.input)
-stereo.depth.link(spatial_nn.inputDepth)
-
-spatial_nn.passthrough.link(xout_rgb.input)
-spatial_nn.out.link(xout_nn.input)
-
-print("Pipeline构建完成，正在连接设备...")
-
-# --- 3. 主程序循环（添加调试信息）---
+print("\n[1/3] 连接设备...")
 try:
-    with dai.Device(pipeline) as device:
-        print("设备连接成功！")
-        print(f"DepthAI 版本: {dai.__version__}")
-        
-        q_rgb = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
-        q_nn = device.getOutputQueue(name="detections", maxSize=4, blocking=False)
-        
-        frame = None
-        detections = []
-        
-        startTime = time.monotonic()
-        counter = 0
-        fps = 0
-        
-        # 统计信息
-        detection_stats = {label: 0 for label in LABEL_MAP}
-        frame_count = 0
-
-        while True:
-            in_rgb = q_rgb.get()
-            in_nn = q_nn.get()
-
-            frame = in_rgb.getCvFrame()
-            detections = in_nn.detections
-            
-            frame_count += 1
-            
-            # FPS 计算
-            counter += 1
-            currentTime = time.monotonic()
-            if (currentTime - startTime) > 1:
-                fps = counter / (currentTime - startTime)
-                counter = 0
-                startTime = currentTime
-            
-            # === 调试：打印检测数量 ===
-            if frame_count % 30 == 0:  # 每30帧打印一次
-                print(f"\n[调试] 帧 {frame_count}: 检测到 {len(detections)} 个目标")
-                for i, det in enumerate(detections):
-                    try:
-                        label = LABEL_MAP[det.label]
-                    except:
-                        label = f"unknown({det.label})"
-                    print(f"  {i+1}. {label}: {det.confidence:.3f}")
-
-            # === 可选：添加额外的置信度过滤 ===
-            # 如果 DepthAI 的 NMS 不够强，手动过滤
-            filtered_detections = []
-            for det in detections:
-                # 针对黄灯误检，可以提高黄灯的阈值
-                if det.label == 1 and det.confidence < 0.6:  # yellow
-                    continue
-                if det.confidence >= 0.4:  # 全局最低阈值
-                    filtered_detections.append(det)
-            
-            detections = filtered_detections
-
-            for detection in detections:
-                x1 = int(detection.xmin * frame.shape[1])
-                x2 = int(detection.xmax * frame.shape[1])
-                y1 = int(detection.ymin * frame.shape[0])
-                y2 = int(detection.ymax * frame.shape[0])
-                
-                try: 
-                    label = LABEL_MAP[detection.label]
-                    detection_stats[label] += 1
-                except: 
-                    label = "unknown"
-                
-                # 三色可视化
-                if label == 'red':
-                    color = (0, 0, 255)
-                elif label == 'yellow':
-                    color = (0, 255, 255)
-                elif label == 'green':
-                    color = (0, 255, 0)
-                else:
-                    color = (255, 255, 255)
-                
-                coords = detection.spatialCoordinates
-                
-                # 显示信息
-                cv2.putText(frame, str(label), (x1 + 10, y1 + 20), 
-                           cv2.FONT_HERSHEY_TRIPLEX, 0.5, color, 2)
-                cv2.putText(frame, f"{detection.confidence * 100:.1f}%", 
-                           (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color, 2)
-                cv2.putText(frame, f"Z: {int(coords.z)} mm", 
-                           (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-
-            # 显示 FPS 和统计
-            cv2.putText(frame, f"FPS: {fps:.1f}", 
-                       (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            cv2.putText(frame, f"Detections: {len(detections)}", 
-                       (5, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-            
-            cv2.imshow("Traffic Light Detector", frame)
-
-            key = cv2.waitKey(1)
-            if key == ord('q'):
-                break
-            elif key == ord('d'):  # 按 'd' 显示统计
-                print(f"\n=== 检测统计 (总帧数: {frame_count}) ===")
-                for label, count in detection_stats.items():
-                    print(f"{label}: {count} 次")
-
+    device = dai.Device(pipeline)
+    print("✓ 设备连接成功")
+    print(f"  DepthAI 版本: {dai.__version__}")
 except Exception as e:
-    print(f"\n程序异常: {e}")
-    import traceback
-    traceback.print_exc()
+    print(f"✗ 连接失败: {e}")
+    exit(1)
 
-finally:
-    cv2.destroyAllWindows()
-    print("\n脚本结束。")
+print("\n[2/3] 分析模型输出...")
+
+q_nn = device.getOutputQueue("nn", maxSize=1, blocking=True)
+
+# 获取一帧输出
+nn_data = q_nn.get()
+
+print("\n=== 模型输出信息 ===")
+
+# 方法1：尝试获取所有层
+try:
+    layers = nn_data.getAllLayerNames()
+    print(f"\n输出层数量: {len(layers)}")
+    for i, layer_name in enumerate(layers):
+        print(f"\n层 {i}: {layer_name}")
+        try:
+            layer_data = nn_data.getLayerFp16(layer_name)
+            print(f"  数据类型: FP16")
+            print(f"  数据形状: {layer_data.shape if hasattr(layer_data, 'shape') else 'N/A'}")
+            print(f"  数据大小: {len(layer_data)}")
+            
+            # 尝试推断形状
+            if len(layer_data) == 24 * 52 * 52:
+                print(f"  → 推断形状: [1, 24, 52, 52] 或 [1, 3, 52, 52, 8]")
+            elif len(layer_data) == 24 * 26 * 26:
+                print(f"  → 推断形状: [1, 24, 26, 26] 或 [1, 3, 26, 26, 8]")
+            elif len(layer_data) == 24 * 13 * 13:
+                print(f"  → 推断形状: [1, 24, 13, 13] 或 [1, 3, 13, 13, 8]")
+            
+            # 检查数值范围
+            layer_array = np.array(layer_data)
+            print(f"  数值范围: [{layer_array.min():.3f}, {layer_array.max():.3f}]")
+            print(f"  均值: {layer_array.mean():.3f}")
+            
+        except Exception as e:
+            print(f"  ✗ 无法读取: {e}")
+            
+except Exception as e:
+    print(f"✗ 获取层信息失败: {e}")
+
+# 方法2：尝试使用 YoloSpatialDetectionNetwork 的解析
+print("\n\n[3/3] 测试 YOLO 解析...")
+
+pipeline2 = dai.Pipeline()
+cam2 = pipeline2.create(dai.node.ColorCamera)
+cam2.setPreviewSize(416, 416)
+cam2.setInterleaved(False)
+
+yolo_nn = pipeline2.create(dai.node.MobileNetSpatialDetectionNetwork)
+yolo_nn.setBlobPath(MODEL_PATH)
+yolo_nn.setConfidenceThreshold(0.3)
+
+xout2 = pipeline2.create(dai.node.XLinkOut)
+xout2.setStreamName("det")
+
+cam2.preview.link(yolo_nn.input)
+yolo_nn.out.link(xout2.input)
+
+try:
+    device2 = dai.Device(pipeline2)
+    q_det = device2.getOutputQueue("det", 1, True)
+    
+    det_data = q_det.get()
+    detections = det_data.detections
+    
+    print(f"✓ YOLO 解析成功")
+    print(f"  检测数量: {len(detections)}")
+    
+    if len(detections) > 10:
+        print(f"  ⚠️  警告：检测框过多({len(detections)})，可能 NMS 失效")
+    
+    # 显示前5个检测
+    for i, det in enumerate(detections[:5]):
+        print(f"\n  检测 {i+1}:")
+        print(f"    标签: {det.label}")
+        print(f"    置信度: {det.confidence:.3f}")
+        print(f"    bbox: [{det.xmin:.3f}, {det.ymin:.3f}, {det.xmax:.3f}, {det.ymax:.3f}]")
+    
+    device2.close()
+    
+except Exception as e:
+    print(f"✗ YOLO 解析失败: {e}")
+
+device.close()
+
+print("\n" + "=" * 60)
+print("诊断完成")
+print("=" * 60)
+
+print("\n### 建议 ###")
+print("1. 如果输出层是 [1, 24, H, W] 格式:")
+print("   → 这是通道优先格式，DepthAI 可能无法正确解析")
+print("   → 建议重新导出 ONNX，使用 [1, 3, H, W, 8] 格式")
+print()
+print("2. 如果检测框过多 (>10):")
+print("   → NMS 未正确应用")
+print("   → 尝试不设置 setAnchors 和 setAnchorMasks")
+print("   → 或调整 IoU 阈值到 0.7+")
+print()
+print("3. 如果黄灯误检:")
+print("   → 训练数据可能不平衡")
+print("   → 在代码中添加类别特定的置信度阈值")
+print("   → 考虑重新训练，增加黄灯的负样本")
