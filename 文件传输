@@ -4,12 +4,12 @@ import numpy as np
 import time
 
 # --- 1. 核心参数 ---
-MODEL_PATH = 'models/knottedblob/knottedtraffic1016.blob'  # 你的三分类blob模型路径
-LABEL_MAP = ['red', 'yellow', 'green']    # 三类别
-NN_INPUT_SIZE = 416                       # 需与你模型一致
+MODEL_PATH = 'models/knottedblob/knottedtraffic1016.blob'
+LABEL_MAP = ['red', 'yellow', 'green']
+NN_INPUT_SIZE = 416
 
 # --- 2. 构建Pipeline ---
-print("正在构建Pipeline (三分类红绿灯)...")
+print("正在构建Pipeline (修复版)...")
 pipeline = dai.Pipeline()
 
 # --- 定义节点 ---
@@ -19,7 +19,6 @@ monoRight = pipeline.create(dai.node.MonoCamera)
 stereo = pipeline.create(dai.node.StereoDepth)
 spatial_nn = pipeline.create(dai.node.YoloSpatialDetectionNetwork)
 
-# 输出节点
 xout_rgb = pipeline.create(dai.node.XLinkOut)
 xout_rgb.setStreamName("rgb")
 xout_nn = pipeline.create(dai.node.XLinkOut)
@@ -41,23 +40,40 @@ stereo.setLeftRightCheck(True)
 stereo.setSubpixel(True)
 stereo.setDepthAlign(dai.CameraBoardSocket.RGB)
 
+# === 关键配置：修复 NMS ===
 spatial_nn.setBlobPath(MODEL_PATH)
-spatial_nn.setConfidenceThreshold(0.5)
+
+# 降低置信度阈值，让 NMS 发挥作用
+spatial_nn.setConfidenceThreshold(0.3)  # 从 0.5 降到 0.3
+
 spatial_nn.input.setBlocking(False)
 spatial_nn.setBoundingBoxScaleFactor(0.5)
 spatial_nn.setDepthLowerThreshold(100)
 spatial_nn.setDepthUpperThreshold(10000)
 
-# YOLO参数（anchor需与你的模型一致，以下为YOLOv4常用anchor，如有不同请替换）
+# YOLO 参数
 spatial_nn.setNumClasses(3)
 spatial_nn.setCoordinateSize(4)
 
-#spatial_nn.setAnchors(np.array([10, 14, 23, 27, 37, 58, 81, 82, 135, 169, 344, 319]))
-#yolov5n.yaml的anchors
-spatial_nn.setAnchors(np.array([10, 13, 16, 30, 33, 23, 30, 61, 62, 45, 59, 119, 116, 90, 156, 198, 373, 326]))
-#spatial_nn.setAnchorMasks({"output0": [0, 1, 2], "417": [3, 4, 5], "460": [6, 7, 8], "side8": [9, 10, 11]})
+# YOLOv5n 标准锚框 (416x416)
+spatial_nn.setAnchors([10, 13, 16, 30, 33, 23, 30, 61, 62, 45, 59, 119, 116, 90, 156, 198, 373, 326])
+
+# === 关键：正确的锚框遮罩 ===
+# 对于输出格式 [1, 24, 52, 52] 这样的通道优先格式
+# 尝试以下几种配置（取消注释测试）
+
+# 配置 1：标准命名
 spatial_nn.setAnchorMasks({"side52": [0, 1, 2], "side26": [3, 4, 5], "side13": [6, 7, 8]})
-spatial_nn.setIouThreshold(0.5)
+
+# 配置 2：使用输出层名称（如果配置1不行，注释掉配置1，取消注释这个）
+# spatial_nn.setAnchorMasks({"output0": [0, 1, 2], "output1": [3, 4, 5], "output2": [6, 7, 8]})
+
+# 配置 3：完全不设置（让 DepthAI 自动解析）
+# 注释掉上面的 setAnchors 和 setAnchorMasks
+
+# === 关键：IoU 阈值调整 ===
+# 提高 IoU 阈值可以减少重复框
+spatial_nn.setIouThreshold(0.6)  # 从 0.5 提高到 0.6
 
 # --- 链接节点 ---
 monoLeft.out.link(stereo.left)
@@ -70,10 +86,11 @@ spatial_nn.out.link(xout_nn.input)
 
 print("Pipeline构建完成，正在连接设备...")
 
-# --- 3. 主程序循环 ---
+# --- 3. 主程序循环（添加调试信息）---
 try:
     with dai.Device(pipeline) as device:
         print("设备连接成功！")
+        print(f"DepthAI 版本: {dai.__version__}")
         
         q_rgb = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
         q_nn = device.getOutputQueue(name="detections", maxSize=4, blocking=False)
@@ -81,10 +98,13 @@ try:
         frame = None
         detections = []
         
-        # FPS计算器变量
         startTime = time.monotonic()
         counter = 0
         fps = 0
+        
+        # 统计信息
+        detection_stats = {label: 0 for label in LABEL_MAP}
+        frame_count = 0
 
         while True:
             in_rgb = q_rgb.get()
@@ -93,13 +113,37 @@ try:
             frame = in_rgb.getCvFrame()
             detections = in_nn.detections
             
-            # FPS计算逻辑
+            frame_count += 1
+            
+            # FPS 计算
             counter += 1
             currentTime = time.monotonic()
             if (currentTime - startTime) > 1:
                 fps = counter / (currentTime - startTime)
                 counter = 0
                 startTime = currentTime
+            
+            # === 调试：打印检测数量 ===
+            if frame_count % 30 == 0:  # 每30帧打印一次
+                print(f"\n[调试] 帧 {frame_count}: 检测到 {len(detections)} 个目标")
+                for i, det in enumerate(detections):
+                    try:
+                        label = LABEL_MAP[det.label]
+                    except:
+                        label = f"unknown({det.label})"
+                    print(f"  {i+1}. {label}: {det.confidence:.3f}")
+
+            # === 可选：添加额外的置信度过滤 ===
+            # 如果 DepthAI 的 NMS 不够强，手动过滤
+            filtered_detections = []
+            for det in detections:
+                # 针对黄灯误检，可以提高黄灯的阈值
+                if det.label == 1 and det.confidence < 0.6:  # yellow
+                    continue
+                if det.confidence >= 0.4:  # 全局最低阈值
+                    filtered_detections.append(det)
+            
+            detections = filtered_detections
 
             for detection in detections:
                 x1 = int(detection.xmin * frame.shape[1])
@@ -107,8 +151,11 @@ try:
                 y1 = int(detection.ymin * frame.shape[0])
                 y2 = int(detection.ymax * frame.shape[0])
                 
-                try: label = LABEL_MAP[detection.label]
-                except: label = "unknown"
+                try: 
+                    label = LABEL_MAP[detection.label]
+                    detection_stats[label] += 1
+                except: 
+                    label = "unknown"
                 
                 # 三色可视化
                 if label == 'red':
@@ -123,25 +170,35 @@ try:
                 coords = detection.spatialCoordinates
                 
                 # 显示信息
-                cv2.putText(frame, str(label), (x1 + 10, y1 + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                cv2.putText(frame, f"{detection.confidence * 100:.2f}%", (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                cv2.putText(frame, f"X: {int(coords.x)} mm", (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                cv2.putText(frame, f"Y: {int(coords.y)} mm", (x1 + 10, y1 + 65), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                cv2.putText(frame, f"Z: {int(coords.z)} mm", (x1 + 10, y1 + 80), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
+                cv2.putText(frame, str(label), (x1 + 10, y1 + 20), 
+                           cv2.FONT_HERSHEY_TRIPLEX, 0.5, color, 2)
+                cv2.putText(frame, f"{detection.confidence * 100:.1f}%", 
+                           (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color, 2)
+                cv2.putText(frame, f"Z: {int(coords.z)} mm", 
+                           (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
-            # 显示FPS
-            cv2.putText(frame, f"NN fps: {fps:.2f}", (2, frame.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, (255, 255, 255))
-            cv2.imshow("Final Detector", frame)
+            # 显示 FPS 和统计
+            cv2.putText(frame, f"FPS: {fps:.1f}", 
+                       (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            cv2.putText(frame, f"Detections: {len(detections)}", 
+                       (5, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            
+            cv2.imshow("Traffic Light Detector", frame)
 
-            if cv2.waitKey(1) == ord('q'):
+            key = cv2.waitKey(1)
+            if key == ord('q'):
                 break
+            elif key == ord('d'):  # 按 'd' 显示统计
+                print(f"\n=== 检测统计 (总帧数: {frame_count}) ===")
+                for label, count in detection_stats.items():
+                    print(f"{label}: {count} 次")
 
 except Exception as e:
-    print(f"\n程序在运行时出现异常: {e}")
+    print(f"\n程序异常: {e}")
     import traceback
     traceback.print_exc()
 
 finally:
     cv2.destroyAllWindows()
-    print("\n脚本执行结束。")
+    print("\n脚本结束。")
