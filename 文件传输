@@ -1,139 +1,244 @@
-(venv) knotted@nomad:~/wtcaneolddepthai $ python final_trafficlightyolov5test2blob.py
-============================================================
-Blob 模型诊断工具
-============================================================
+import cv2
+import depthai as dai
+import numpy as np
+import time
 
-[1/3] 连接设备...
-✓ 设备连接成功
-  DepthAI 版本: 2.30.0.0
+"""
+临时解决方案：使用 NeuralNetwork 节点 + 手动 YOLO 解析
+绕过 YoloSpatialDetectionNetwork 的格式限制
+"""
 
-[2/3] 分析模型输出...
+MODEL_PATH = 'models/knottedblob/knottedtraffic1016.blob'
+LABEL_MAP = ['red', 'yellow', 'green']
+NN_INPUT_SIZE = 416
 
-=== 模型输出信息 ===
+# YOLO 参数
+NUM_CLASSES = 3
+ANCHORS = np.array([
+    [10, 13], [16, 30], [33, 23],    # 52x52
+    [30, 61], [62, 45], [59, 119],   # 26x26
+    [116, 90], [156, 198], [373, 326] # 13x13
+], dtype=np.float32)
 
-输出层数量: 3
-
-层 0: output0
-  数据类型: FP16
-  数据形状: N/A
-  数据大小: 64896
-  → 推断形状: [1, 24, 52, 52] 或 [1, 3, 52, 52, 8]
-  数值范围: [-31.734, 10.070]
-  均值: -1.987
-
-层 1: output1
-  数据类型: FP16
-  数据形状: N/A
-  数据大小: 16224
-  → 推断形状: [1, 24, 26, 26] 或 [1, 3, 26, 26, 8]
-  数值范围: [-20.906, 4.773]
-  均值: -1.772
-
-层 2: output2
-  数据类型: FP16
-  数据形状: N/A
-  数据大小: 4056
-  → 推断形状: [1, 24, 13, 13] 或 [1, 3, 13, 13, 8]
-  数值范围: [-16.688, 4.227]
-  均值: -1.881
+STRIDES = [8, 16, 32]  # 对应 52, 26, 13
 
 
-[3/3] 测试 YOLO 解析...
-✗ YOLO 解析失败: Failed to connect to device, error message: X_LINK_DEVICE_ALREADY_IN_USE
+def decode_yolo_output(outputs, conf_thresh=0.5, iou_thresh=0.5):
+    """
+    手动解析 YOLO 输出 [1, 24, H, W]
+    """
+    detections = []
+    
+    for layer_idx, output in enumerate(outputs):
+        # output shape: [24, H, W] (已经去掉了 batch 维度)
+        num_attrs = 5 + NUM_CLASSES  # 8
+        num_anchors = 3
+        
+        h, w = output.shape[1], output.shape[2]
+        stride = STRIDES[layer_idx]
+        
+        # 重塑: [24, H, W] -> [3, 8, H, W] -> [3, H, W, 8]
+        output = output.reshape(num_anchors, num_attrs, h, w)
+        output = output.transpose(0, 2, 3, 1)  # [3, H, W, 8]
+        
+        # 遍历每个锚框
+        for anchor_idx in range(num_anchors):
+            for i in range(h):
+                for j in range(w):
+                    pred = output[anchor_idx, i, j]
+                    
+                    # 解析
+                    obj_conf = sigmoid(pred[4])
+                    
+                    if obj_conf < conf_thresh:
+                        continue
+                    
+                    # 类别置信度
+                    class_scores = sigmoid(pred[5:])
+                    class_id = np.argmax(class_scores)
+                    class_conf = class_scores[class_id]
+                    
+                    final_conf = obj_conf * class_conf
+                    
+                    if final_conf < conf_thresh:
+                        continue
+                    
+                    # 边界框
+                    tx, ty, tw, th = pred[:4]
+                    
+                    # 解码坐标
+                    cx = (sigmoid(tx) + j) * stride
+                    cy = (sigmoid(ty) + i) * stride
+                    
+                    anchor = ANCHORS[layer_idx * 3 + anchor_idx]
+                    bw = anchor[0] * np.exp(tw)
+                    bh = anchor[1] * np.exp(th)
+                    
+                    # 转换为归一化坐标
+                    x1 = (cx - bw/2) / NN_INPUT_SIZE
+                    y1 = (cy - bh/2) / NN_INPUT_SIZE
+                    x2 = (cx + bw/2) / NN_INPUT_SIZE
+                    y2 = (cy + bh/2) / NN_INPUT_SIZE
+                    
+                    # 裁剪到 [0, 1]
+                    x1, y1 = max(0, x1), max(0, y1)
+                    x2, y2 = min(1, x2), min(1, y2)
+                    
+                    detections.append({
+                        'label': int(class_id),
+                        'confidence': float(final_conf),
+                        'bbox': [x1, y1, x2, y2]
+                    })
+    
+    # NMS
+    detections = non_max_suppression(detections, iou_thresh)
+    return detections
 
-============================================================
-诊断完成
-============================================================
 
-### 建议 ###
-1. 如果输出层是 [1, 24, H, W] 格式:
-   → 这是通道优先格式，DepthAI 可能无法正确解析
-   → 建议重新导出 ONNX，使用 [1, 3, H, W, 8] 格式
-
-2. 如果检测框过多 (>10):
-   → NMS 未正确应用
-   → 尝试不设置 setAnchors 和 setAnchorMasks
-   → 或调整 IoU 阈值到 0.7+
-
-3. 如果黄灯误检:
-   → 训练数据可能不平衡
-   → 在代码中添加类别特定的置信度阈值
-   → 考虑重新训练，增加黄灯的负样本
-(venv) knotted@nomad:~/wtcaneolddepthai $ 
+def sigmoid(x):
+    return 1 / (1 + np.exp(-np.clip(x, -20, 20)))
 
 
-[调试] 帧 150: 检测到 33 个目标
-  1. yellow: 68.137
-  2. yellow: 64.107
-  3. yellow: 56.376
-  4. yellow: 53.951
-  5. yellow: 40.074
-  6. yellow: 39.203
-  7. yellow: 39.122
-  8. yellow: 38.369
-  9. yellow: 34.823
-  10. yellow: 32.048
-  11. yellow: 23.800
-  12. yellow: 22.719
-  13. yellow: 22.260
-  14. yellow: 21.802
-  15. yellow: 20.476
-  16. yellow: 19.771
-  17. yellow: 19.403
-  18. yellow: 19.311
-  19. yellow: 14.586
-  20. yellow: 14.456
-  21. yellow: 13.224
-  22. yellow: 12.976
-  23. yellow: 11.099
-  24. yellow: 9.566
-  25. yellow: 9.099
-  26. yellow: 6.499
-  27. yellow: 5.370
-  28. yellow: 4.347
-  29. yellow: 3.762
-  30. yellow: 3.441
-  31. yellow: 3.270
-  32. yellow: 2.887
-  33. yellow: 2.085
+def non_max_suppression(detections, iou_threshold=0.5):
+    """NMS 实现"""
+    if len(detections) == 0:
+        return []
+    
+    # 按置信度排序
+    detections = sorted(detections, key=lambda x: x['confidence'], reverse=True)
+    keep = []
+    
+    while detections:
+        best = detections.pop(0)
+        keep.append(best)
+        
+        # 过滤重叠框
+        detections = [d for d in detections if iou(best['bbox'], d['bbox']) < iou_threshold]
+    
+    return keep
 
-[调试] 帧 180: 检测到 4 个目标
-  1. yellow: 42.062
-  2. yellow: 22.923
-  3. yellow: 4.754
-  4. green: 3.315
-[1944301001B6EB2C00] [1.1.1] [10.609] [SpatialDetectionNetwork(4)] [error] ROI x:0.4733781 y:1 width:0.007383555 height:0 is not a valid rectangle.
-[1944301001B6EB2C00] [1.1.1] [10.609] [SpatialDetectionNetwork(4)] [error] ROI x:0.4856881 y:1 width:0.009218633 height:0 is not a valid rectangle.
-[1944301001B6EB2C00] [1.1.1] [10.809] [SpatialDetectionNetwork(4)] [error] ROI x:0.45776075 y:1 width:0.020886362 height:0 is not a valid rectangle.
-[1944301001B6EB2C00] [1.1.1] [10.809] [SpatialDetectionNetwork(4)] [error] ROI x:0.44273034 y:1 width:0.028414965 height:0 is not a valid rectangle.
-[1944301001B6EB2C00] [1.1.1] [10.909] [SpatialDetectionNetwork(4)] [error] ROI x:0.42636254 y:1 width:0.007902116 height:0 is not a valid rectangle.
-[1944301001B6EB2C00] [1.1.1] [10.909] [SpatialDetectionNetwork(4)] [error] ROI x:0.42566955 y:1 width:0.008336484 height:0 is not a valid rectangle.
 
-[调试] 帧 210: 检测到 0 个目标
+def iou(box1, box2):
+    """计算 IoU"""
+    x1 = max(box1[0], box2[0])
+    y1 = max(box1[1], box2[1])
+    x2 = min(box1[2], box2[2])
+    y2 = min(box1[3], box2[3])
+    
+    inter = max(0, x2 - x1) * max(0, y2 - y1)
+    area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
+    area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
+    
+    return inter / (area1 + area2 - inter + 1e-6)
 
-[调试] 帧 240: 检测到 1 个目标
-  1. red: 2.056
 
-[调试] 帧 270: 检测到 2 个目标
-  1. green: 3.352
-  2. red: 2.656
+# ===== Pipeline 构建 =====
+print("正在构建 Pipeline (手动解析模式)...")
+pipeline = dai.Pipeline()
 
-[调试] 帧 300: 检测到 2 个目标
-  1. red: 9.034
-  2. red: 6.854
+cam_rgb = pipeline.create(dai.node.ColorCamera)
+nn = pipeline.create(dai.node.NeuralNetwork)
 
-[调试] 帧 330: 检测到 3 个目标
-  1. red: 9.804
-  2. red: 8.336
-  3. red: 2.168
+xout_rgb = pipeline.create(dai.node.XLinkOut)
+xout_rgb.setStreamName("rgb")
+xout_nn = pipeline.create(dai.node.XLinkOut)
+xout_nn.setStreamName("nn")
 
-[调试] 帧 360: 检测到 3 个目标
-  1. red: 9.820
-  2. red: 8.825
-  3. red: 2.423
+# 配置
+cam_rgb.setPreviewSize(NN_INPUT_SIZE, NN_INPUT_SIZE)
+cam_rgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
+cam_rgb.setInterleaved(False)
+cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
 
-[调试] 帧 390: 检测到 3 个目标
-  1. red: 13.905
-  2. red: 11.103
-  3. red: 4.647
+nn.setBlobPath(MODEL_PATH)
+nn.setNumInferenceThreads(2)
 
+# 链接
+cam_rgb.preview.link(nn.input)
+cam_rgb.preview.link(xout_rgb.input)
+nn.out.link(xout_nn.input)
+
+print("Pipeline 构建完成，正在连接设备...")
+
+# ===== 主循环 =====
+try:
+    with dai.Device(pipeline) as device:
+        print("设备连接成功！")
+        
+        q_rgb = device.getOutputQueue("rgb", maxSize=4, blocking=False)
+        q_nn = device.getOutputQueue("nn", maxSize=4, blocking=False)
+        
+        startTime = time.monotonic()
+        counter = 0
+        fps = 0
+
+        while True:
+            in_rgb = q_rgb.get()
+            in_nn = q_nn.get()
+
+            frame = in_rgb.getCvFrame()
+            
+            # 获取三层输出
+            try:
+                output0 = np.array(in_nn.getLayerFp16('output0')).reshape(24, 52, 52)
+                output1 = np.array(in_nn.getLayerFp16('output1')).reshape(24, 26, 26)
+                output2 = np.array(in_nn.getLayerFp16('output2')).reshape(24, 13, 13)
+                
+                outputs = [output0, output1, output2]
+                
+                # 解析检测
+                detections = decode_yolo_output(
+                    outputs, 
+                    conf_thresh=0.5,  # 可调整
+                    iou_thresh=0.5    # 可调整
+                )
+                
+            except Exception as e:
+                print(f"解析错误: {e}")
+                detections = []
+            
+            # FPS
+            counter += 1
+            currentTime = time.monotonic()
+            if (currentTime - startTime) > 1:
+                fps = counter / (currentTime - startTime)
+                counter = 0
+                startTime = currentTime
+            
+            # 绘制
+            for det in detections:
+                x1 = int(det['bbox'][0] * frame.shape[1])
+                y1 = int(det['bbox'][1] * frame.shape[0])
+                x2 = int(det['bbox'][2] * frame.shape[1])
+                y2 = int(det['bbox'][3] * frame.shape[0])
+                
+                label = LABEL_MAP[det['label']]
+                
+                if label == 'red':
+                    color = (0, 0, 255)
+                elif label == 'yellow':
+                    color = (0, 255, 255)
+                else:
+                    color = (0, 255, 0)
+                
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(frame, f"{label} {det['confidence']:.2f}", 
+                           (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            
+            # 显示信息
+            cv2.putText(frame, f"FPS: {fps:.1f} | Dets: {len(detections)}", 
+                       (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            
+            cv2.imshow("Traffic Light (Manual)", frame)
+
+            if cv2.waitKey(1) == ord('q'):
+                break
+
+except Exception as e:
+    print(f"错误: {e}")
+    import traceback
+    traceback.print_exc()
+
+finally:
+    cv2.destroyAllWindows()
+    print("脚本结束。")
