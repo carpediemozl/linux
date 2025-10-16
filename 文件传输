@@ -1,244 +1,115 @@
-import cv2
-import depthai as dai
-import numpy as np
-import time
-
 """
-临时解决方案：使用 NeuralNetwork 节点 + 手动 YOLO 解析
-绕过 YoloSpatialDetectionNetwork 的格式限制
+检查 YOLOv5 模型的类别顺序
+这是导致黄灯误检的最可能原因
 """
 
-MODEL_PATH = 'models/knottedblob/knottedtraffic1016.blob'
-LABEL_MAP = ['red', 'yellow', 'green']
-NN_INPUT_SIZE = 416
+import torch
+import yaml
 
-# YOLO 参数
-NUM_CLASSES = 3
-ANCHORS = np.array([
-    [10, 13], [16, 30], [33, 23],    # 52x52
-    [30, 61], [62, 45], [59, 119],   # 26x26
-    [116, 90], [156, 198], [373, 326] # 13x13
-], dtype=np.float32)
+PT_PATH = 'runs/detect/traffic_light_expv5n/weights/best.pt'
+DATA_YAML = 'data/traffic_light.yaml'  # 您的数据配置文件
 
-STRIDES = [8, 16, 32]  # 对应 52, 26, 13
+print("=" * 60)
+print("模型类别顺序检查")
+print("=" * 60)
 
-
-def decode_yolo_output(outputs, conf_thresh=0.5, iou_thresh=0.5):
-    """
-    手动解析 YOLO 输出 [1, 24, H, W]
-    """
-    detections = []
-    
-    for layer_idx, output in enumerate(outputs):
-        # output shape: [24, H, W] (已经去掉了 batch 维度)
-        num_attrs = 5 + NUM_CLASSES  # 8
-        num_anchors = 3
-        
-        h, w = output.shape[1], output.shape[2]
-        stride = STRIDES[layer_idx]
-        
-        # 重塑: [24, H, W] -> [3, 8, H, W] -> [3, H, W, 8]
-        output = output.reshape(num_anchors, num_attrs, h, w)
-        output = output.transpose(0, 2, 3, 1)  # [3, H, W, 8]
-        
-        # 遍历每个锚框
-        for anchor_idx in range(num_anchors):
-            for i in range(h):
-                for j in range(w):
-                    pred = output[anchor_idx, i, j]
-                    
-                    # 解析
-                    obj_conf = sigmoid(pred[4])
-                    
-                    if obj_conf < conf_thresh:
-                        continue
-                    
-                    # 类别置信度
-                    class_scores = sigmoid(pred[5:])
-                    class_id = np.argmax(class_scores)
-                    class_conf = class_scores[class_id]
-                    
-                    final_conf = obj_conf * class_conf
-                    
-                    if final_conf < conf_thresh:
-                        continue
-                    
-                    # 边界框
-                    tx, ty, tw, th = pred[:4]
-                    
-                    # 解码坐标
-                    cx = (sigmoid(tx) + j) * stride
-                    cy = (sigmoid(ty) + i) * stride
-                    
-                    anchor = ANCHORS[layer_idx * 3 + anchor_idx]
-                    bw = anchor[0] * np.exp(tw)
-                    bh = anchor[1] * np.exp(th)
-                    
-                    # 转换为归一化坐标
-                    x1 = (cx - bw/2) / NN_INPUT_SIZE
-                    y1 = (cy - bh/2) / NN_INPUT_SIZE
-                    x2 = (cx + bw/2) / NN_INPUT_SIZE
-                    y2 = (cy + bh/2) / NN_INPUT_SIZE
-                    
-                    # 裁剪到 [0, 1]
-                    x1, y1 = max(0, x1), max(0, y1)
-                    x2, y2 = min(1, x2), min(1, y2)
-                    
-                    detections.append({
-                        'label': int(class_id),
-                        'confidence': float(final_conf),
-                        'bbox': [x1, y1, x2, y2]
-                    })
-    
-    # NMS
-    detections = non_max_suppression(detections, iou_thresh)
-    return detections
-
-
-def sigmoid(x):
-    return 1 / (1 + np.exp(-np.clip(x, -20, 20)))
-
-
-def non_max_suppression(detections, iou_threshold=0.5):
-    """NMS 实现"""
-    if len(detections) == 0:
-        return []
-    
-    # 按置信度排序
-    detections = sorted(detections, key=lambda x: x['confidence'], reverse=True)
-    keep = []
-    
-    while detections:
-        best = detections.pop(0)
-        keep.append(best)
-        
-        # 过滤重叠框
-        detections = [d for d in detections if iou(best['bbox'], d['bbox']) < iou_threshold]
-    
-    return keep
-
-
-def iou(box1, box2):
-    """计算 IoU"""
-    x1 = max(box1[0], box2[0])
-    y1 = max(box1[1], box2[1])
-    x2 = min(box1[2], box2[2])
-    y2 = min(box1[3], box2[3])
-    
-    inter = max(0, x2 - x1) * max(0, y2 - y1)
-    area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
-    area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
-    
-    return inter / (area1 + area2 - inter + 1e-6)
-
-
-# ===== Pipeline 构建 =====
-print("正在构建 Pipeline (手动解析模式)...")
-pipeline = dai.Pipeline()
-
-cam_rgb = pipeline.create(dai.node.ColorCamera)
-nn = pipeline.create(dai.node.NeuralNetwork)
-
-xout_rgb = pipeline.create(dai.node.XLinkOut)
-xout_rgb.setStreamName("rgb")
-xout_nn = pipeline.create(dai.node.XLinkOut)
-xout_nn.setStreamName("nn")
-
-# 配置
-cam_rgb.setPreviewSize(NN_INPUT_SIZE, NN_INPUT_SIZE)
-cam_rgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
-cam_rgb.setInterleaved(False)
-cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
-
-nn.setBlobPath(MODEL_PATH)
-nn.setNumInferenceThreads(2)
-
-# 链接
-cam_rgb.preview.link(nn.input)
-cam_rgb.preview.link(xout_rgb.input)
-nn.out.link(xout_nn.input)
-
-print("Pipeline 构建完成，正在连接设备...")
-
-# ===== 主循环 =====
+# 1. 检查模型中的类别名称
+print("\n[1/3] 检查模型...")
 try:
-    with dai.Device(pipeline) as device:
-        print("设备连接成功！")
+    ckpt = torch.load(PT_PATH, map_location='cpu')
+    
+    if 'model' in ckpt:
+        model = ckpt['model']
+    elif 'ema' in ckpt:
+        model = ckpt['ema']
+    else:
+        model = ckpt
+    
+    # 获取类别名称
+    if hasattr(model, 'names'):
+        model_names = model.names
+        print(f"✓ 模型类别名称: {model_names}")
+        print(f"  类别数: {len(model_names)}")
         
-        q_rgb = device.getOutputQueue("rgb", maxSize=4, blocking=False)
-        q_nn = device.getOutputQueue("nn", maxSize=4, blocking=False)
-        
-        startTime = time.monotonic()
-        counter = 0
-        fps = 0
-
-        while True:
-            in_rgb = q_rgb.get()
-            in_nn = q_nn.get()
-
-            frame = in_rgb.getCvFrame()
-            
-            # 获取三层输出
-            try:
-                output0 = np.array(in_nn.getLayerFp16('output0')).reshape(24, 52, 52)
-                output1 = np.array(in_nn.getLayerFp16('output1')).reshape(24, 26, 26)
-                output2 = np.array(in_nn.getLayerFp16('output2')).reshape(24, 13, 13)
-                
-                outputs = [output0, output1, output2]
-                
-                # 解析检测
-                detections = decode_yolo_output(
-                    outputs, 
-                    conf_thresh=0.5,  # 可调整
-                    iou_thresh=0.5    # 可调整
-                )
-                
-            except Exception as e:
-                print(f"解析错误: {e}")
-                detections = []
-            
-            # FPS
-            counter += 1
-            currentTime = time.monotonic()
-            if (currentTime - startTime) > 1:
-                fps = counter / (currentTime - startTime)
-                counter = 0
-                startTime = currentTime
-            
-            # 绘制
-            for det in detections:
-                x1 = int(det['bbox'][0] * frame.shape[1])
-                y1 = int(det['bbox'][1] * frame.shape[0])
-                x2 = int(det['bbox'][2] * frame.shape[1])
-                y2 = int(det['bbox'][3] * frame.shape[0])
-                
-                label = LABEL_MAP[det['label']]
-                
-                if label == 'red':
-                    color = (0, 0, 255)
-                elif label == 'yellow':
-                    color = (0, 255, 255)
-                else:
-                    color = (0, 255, 0)
-                
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(frame, f"{label} {det['confidence']:.2f}", 
-                           (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-            
-            # 显示信息
-            cv2.putText(frame, f"FPS: {fps:.1f} | Dets: {len(detections)}", 
-                       (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            
-            cv2.imshow("Traffic Light (Manual)", frame)
-
-            if cv2.waitKey(1) == ord('q'):
-                break
+        for i, name in enumerate(model_names):
+            print(f"  索引 {i}: {name}")
+    else:
+        print("✗ 模型中未找到类别名称")
+        model_names = None
 
 except Exception as e:
-    print(f"错误: {e}")
-    import traceback
-    traceback.print_exc()
+    print(f"✗ 读取模型失败: {e}")
+    model_names = None
 
-finally:
-    cv2.destroyAllWindows()
-    print("脚本结束。")
+# 2. 检查训练配置
+print("\n[2/3] 检查训练配置...")
+try:
+    with open(DATA_YAML, 'r') as f:
+        data_config = yaml.safe_load(f)
+    
+    yaml_names = data_config.get('names', [])
+    print(f"✓ 配置文件类别: {yaml_names}")
+    print(f"  类别数: {len(yaml_names)}")
+    
+    for i, name in enumerate(yaml_names):
+        print(f"  索引 {i}: {name}")
+
+except Exception as e:
+    print(f"✗ 读取配置失败: {e}")
+    yaml_names = None
+
+# 3. 对比分析
+print("\n[3/3] 对比分析...")
+
+code_names = ['red', 'yellow', 'green']
+print(f"代码中定义: {code_names}")
+
+print("\n=== 诊断结果 ===")
+
+# 检查一致性
+if model_names and yaml_names:
+    if model_names == yaml_names:
+        print("✓ 模型和配置文件类别一致")
+    else:
+        print("✗ 警告：模型和配置文件类别不一致！")
+        print(f"  模型: {model_names}")
+        print(f"  配置: {yaml_names}")
+
+# 检查代码一致性
+if model_names:
+    if model_names == code_names:
+        print("✓ 模型和代码类别一致")
+    else:
+        print("⚠️  警告：模型和代码类别顺序可能不一致！")
+        print(f"  模型: {model_names}")
+        print(f"  代码: {code_names}")
+        
+        print("\n### 修复建议 ###")
+        print("请将代码中的 LABEL_MAP 修改为：")
+        print(f"LABEL_MAP = {model_names}")
+
+# 4. 常见问题检查
+print("\n=== 常见问题检查 ===")
+
+expected_orders = [
+    ['red', 'yellow', 'green'],
+    ['green', 'red', 'yellow'],
+    ['green', 'yellow', 'red'],
+    ['red', 'green', 'yellow'],
+    ['yellow', 'green', 'red'],
+    ['yellow', 'red', 'green']
+]
+
+print("可能的类别顺序：")
+for order in expected_orders:
+    print(f"  {order}")
+
+print("\n如果黄灯总是误检，可能的原因：")
+print("1. 训练数据中黄灯样本过多")
+print("2. 类别顺序不匹配（最可能）")
+print("3. 黄灯特征与其他类别重叠")
+print("4. 模型过拟合到黄灯")
+
+print("\n" + "=" * 60)
+print("检查完成")
+print("=" * 60)
