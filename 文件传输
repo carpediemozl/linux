@@ -60,3 +60,80 @@ Blob 模型诊断工具
    → 在代码中添加类别特定的置信度阈值
    → 考虑重新训练，增加黄灯的负样本
 (venv) knotted@nomad:~/wtcaneolddepthai $ 
+
+
+[调试] 帧 150: 检测到 33 个目标
+  1. yellow: 68.137
+  2. yellow: 64.107
+  3. yellow: 56.376
+  4. yellow: 53.951
+  5. yellow: 40.074
+  6. yellow: 39.203
+  7. yellow: 39.122
+  8. yellow: 38.369
+  9. yellow: 34.823
+  10. yellow: 32.048
+  11. yellow: 23.800
+  12. yellow: 22.719
+  13. yellow: 22.260
+  14. yellow: 21.802
+  15. yellow: 20.476
+  16. yellow: 19.771
+  17. yellow: 19.403
+  18. yellow: 19.311
+  19. yellow: 14.586
+  20. yellow: 14.456
+  21. yellow: 13.224
+  22. yellow: 12.976
+  23. yellow: 11.099
+  24. yellow: 9.566
+  25. yellow: 9.099
+  26. yellow: 6.499
+  27. yellow: 5.370
+  28. yellow: 4.347
+  29. yellow: 3.762
+  30. yellow: 3.441
+  31. yellow: 3.270
+  32. yellow: 2.887
+  33. yellow: 2.085
+
+[调试] 帧 180: 检测到 4 个目标
+  1. yellow: 42.062
+  2. yellow: 22.923
+  3. yellow: 4.754
+  4. green: 3.315
+[1944301001B6EB2C00] [1.1.1] [10.609] [SpatialDetectionNetwork(4)] [error] ROI x:0.4733781 y:1 width:0.007383555 height:0 is not a valid rectangle.
+[1944301001B6EB2C00] [1.1.1] [10.609] [SpatialDetectionNetwork(4)] [error] ROI x:0.4856881 y:1 width:0.009218633 height:0 is not a valid rectangle.
+[1944301001B6EB2C00] [1.1.1] [10.809] [SpatialDetectionNetwork(4)] [error] ROI x:0.45776075 y:1 width:0.020886362 height:0 is not a valid rectangle.
+[1944301001B6EB2C00] [1.1.1] [10.809] [SpatialDetectionNetwork(4)] [error] ROI x:0.44273034 y:1 width:0.028414965 height:0 is not a valid rectangle.
+[1944301001B6EB2C00] [1.1.1] [10.909] [SpatialDetectionNetwork(4)] [error] ROI x:0.42636254 y:1 width:0.007902116 height:0 is not a valid rectangle.
+[1944301001B6EB2C00] [1.1.1] [10.909] [SpatialDetectionNetwork(4)] [error] ROI x:0.42566955 y:1 width:0.008336484 height:0 is not a valid rectangle.
+
+[调试] 帧 210: 检测到 0 个目标
+
+[调试] 帧 240: 检测到 1 个目标
+  1. red: 2.056
+
+[调试] 帧 270: 检测到 2 个目标
+  1. green: 3.352
+  2. red: 2.656
+
+[调试] 帧 300: 检测到 2 个目标
+  1. red: 9.034
+  2. red: 6.854
+
+[调试] 帧 330: 检测到 3 个目标
+  1. red: 9.804
+  2. red: 8.336
+  3. red: 2.168
+
+[调试] 帧 360: 检测到 3 个目标
+  1. red: 9.820
+  2. red: 8.825
+  3. red: 2.423
+
+[调试] 帧 390: 检测到 3 个目标
+  1. red: 13.905
+  2. red: 11.103
+  3. red: 4.647
+
