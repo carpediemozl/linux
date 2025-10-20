@@ -5,3 +5,20 @@ python -m pip install "numpy<2.0" "opencv-python==4.8.0.74" torch==1.12.1+cu116 
 python -m pip install matplotlib PyYAML requests scipy tqdm pandas seaborn thop einops timm
 python -m pip install tensorflow==2.10.0
 python export.py --weights runs/train/both_yolov5_c2f_faster_0/weights/best.pt --imgsz 416 --include onnx --opset 12 --simplify
+
+复现fsyolo实在无法解决 尝试复现母项目一点一点改模块 打基础
+
+训练时出现训练15轮报错
+python train.py --trainset_path D:/codefield/cdnet_study/train_data_v5_format --epochs 100 --batch-size 16 --not-use-SE
+
+方法1
+减少 DataLoader Workers
+
+
+
+可能原因：
+DataLoader 的 workers 占用了太多内存
+数据增强（mosaic）占用了大量内存
+可能有内存泄漏
+减少workers数量为4解决了内存问题 
+100轮训练了2小时
