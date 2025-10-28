@@ -108,3 +108,7 @@ torchvision             0.20.1+cu121
                 z.append(y.view(bs, self.na * nx * ny, self.no))
 
         return x if self.training else (torch.cat(z, 1), x)
+
+
+现在有两个数据集 在roboflow上 一个是2000张的 但是我看质量不太行 还有一个是数据增强1700x3
+yolo_traffic是自己训练的 可以使用oldyolov5进行转化 或者直接用oldyolov5训练
