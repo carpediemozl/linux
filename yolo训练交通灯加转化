@@ -112,3 +112,7 @@ torchvision             0.20.1+cu121
 
 现在有两个数据集 在roboflow上 一个是2000张的 但是我看质量不太行 还有一个是数据增强1700x3
 yolo_traffic是自己训练的 可以使用oldyolov5进行转化 或者直接用oldyolov5训练
+
+修改data.yaml中的路径
+训练：python train.py --img 640 --batch 16 --epochs 100 --data dataset2/data.yaml --weights yolov5n.pt
+转化：python export.py --weights runs/detect/traffic_light_exp2/weights/best.pt --imgsz 416 --include onnx --opset 12 --simplify
