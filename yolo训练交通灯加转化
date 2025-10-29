@@ -116,3 +116,6 @@ yolo_traffic是自己训练的 可以使用oldyolov5进行转化 或者直接用
 修改data.yaml中的路径
 训练：python train.py --img 640 --batch 16 --epochs 100 --data dataset2/data.yaml --weights yolov5n.pt
 转化：python export.py --weights runs/detect/traffic_light_exp2/weights/best.pt --imgsz 416 --include onnx --opset 12 --simplify
+
+现在4.17g能跑是因为减少了workers数量
+
