@@ -119,3 +119,6 @@ yolo_traffic是自己训练的 可以使用oldyolov5进行转化 或者直接用
 
 现在4.17g能跑是因为减少了workers数量
 
+已经从yolov5n verison7.0
+从第一次roboflow数据集网站上下载2740x3 数据增强之后的数据集 训练转化成blob文件 best10292.onnx
+
