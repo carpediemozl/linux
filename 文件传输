@@ -1,6 +1,6 @@
 """
-OAK-D 视频测试工具 - 修复版
-修复了变量作用域问题和版本兼容性
+视频红绿灯检测工具
+只检测视频文件中的红绿灯，移除了OAK-D相关代码
 """
 
 import cv2
@@ -16,390 +16,148 @@ MODEL_PATH = 'models/knottedblob/best10301nohue_openvino_2022.1_6shave.blob'
 LABEL_MAP = ['Green', 'Red', 'Yellow']
 NN_INPUT_SIZE = 416
 
+# 检测阈值
 CLASS_THRESHOLDS = {
     'Green': 0.55,
     'Red': 0.50,
     'Yellow': 0.45
 }
 
-# 这些变量会在运行时修改，使用类来管理
-class Config:
-    def __init__(self):
-        self.use_temporal_smoothing = True
-        self.buffer_size = 7
-        self.min_votes = 4
-        self.show_stats = True
-        self.show_confidence = True
-        self.save_output = False
-        self.output_path = 'output.mp4'
-
-config = Config()
-
-
-# --- 时序平滑类 ---
-class TemporalSmoother:
-    def __init__(self, buffer_size=7, min_votes=4):
-        self.buffer_size = buffer_size
-        self.min_votes = min_votes
-        self.label_buffer = deque(maxlen=buffer_size)
-        self.conf_buffer = deque(maxlen=buffer_size)
-        self.bbox_buffer = deque(maxlen=buffer_size)
-        
-    def update(self, detection):
-        if detection is not None:
-            self.label_buffer.append(detection.label)
-            self.conf_buffer.append(detection.confidence)
-            bbox = [detection.xmin, detection.ymin, detection.xmax, detection.ymax]
-            self.bbox_buffer.append(bbox)
-        else:
-            self.label_buffer.append(None)
-            self.conf_buffer.append(0)
-            self.bbox_buffer.append(None)
-    
-    def get_smoothed_detection(self):
-        if len(self.label_buffer) < self.min_votes:
-            return None
-        
-        valid_labels = [l for l in self.label_buffer if l is not None]
-        if len(valid_labels) < self.min_votes:
-            return None
-        
-        label_counts = Counter(valid_labels)
-        most_common_label, vote_count = label_counts.most_common(1)[0]
-        
-        if vote_count < self.min_votes:
-            return None
-        
-        label_confs = [self.conf_buffer[i] for i in range(len(self.label_buffer)) 
-                       if self.label_buffer[i] == most_common_label]
-        avg_confidence = np.mean(label_confs) if label_confs else 0
-        
-        label_bboxes = [self.bbox_buffer[i] for i in range(len(self.label_buffer))
-                        if self.label_buffer[i] == most_common_label and self.bbox_buffer[i] is not None]
-        
-        if label_bboxes:
-            avg_bbox = np.mean(label_bboxes, axis=0)
-        else:
-            avg_bbox = None
-        
-        return {
-            'label': most_common_label,
-            'confidence': avg_confidence,
-            'bbox': avg_bbox,
-            'votes': vote_count,
-            'total_frames': len(self.label_buffer)
-        }
-    
-    def reset(self):
-        self.label_buffer.clear()
-        self.conf_buffer.clear()
-        self.bbox_buffer.clear()
-
-
-# --- 统计类 ---
-class DetectionStats:
-    def __init__(self):
-        self.history = {label: deque(maxlen=300) for label in LABEL_MAP}
-        self.total_counts = {label: 0 for label in LABEL_MAP}
-        self.confidence_history = deque(maxlen=100)
-        
-    def update(self, label, confidence):
-        for l in LABEL_MAP:
-            self.history[l].append(1 if l == label else 0)
-        self.total_counts[label] += 1
-        self.confidence_history.append(confidence)
-    
-    def get_recent_distribution(self, frames=30):
-        counts = {}
-        for label in LABEL_MAP:
-            if len(self.history[label]) >= frames:
-                counts[label] = sum(list(self.history[label])[-frames:])
-            else:
-                counts[label] = sum(self.history[label])
-        return counts
-    
-    def draw_stats(self, frame, x=10, y=100):
-        if not config.show_stats:
-            return frame
-        
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (x-5, y-25), (x+300, y+150), (0, 0, 0), -1)
-        frame = cv2.addWeighted(overlay, 0.6, frame, 0.4, 0)
-        
-        cv2.putText(frame, "Stats (Last 30 frames)", 
-                   (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        
-        recent = self.get_recent_distribution(30)
-        y_offset = y + 25
-        
-        for label in LABEL_MAP:
-            count = recent[label]
-            total = self.total_counts[label]
-            
-            if label == 'Green':
-                color = (0, 255, 0)
-            elif label == 'Red':
-                color = (0, 0, 255)
-            else:
-                color = (0, 255, 255)
-            
-            text = f"{label}: {count}/30 (Total: {total})"
-            cv2.putText(frame, text, (x, y_offset), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-            
-            bar_width = int(count / 30 * 200)
-            cv2.rectangle(frame, (x, y_offset+5), (x+200, y_offset+15), (50, 50, 50), -1)
-            cv2.rectangle(frame, (x, y_offset+5), (x+bar_width, y_offset+15), color, -1)
-            
-            y_offset += 30
-        
-        return frame
-
-
-# --- 主函数 ---
-def main(video_path):
-    print("=" * 70)
-    print("OAK-D 视频测试工具")
-    print("=" * 70)
-    print(f"视频源: {video_path}")
-    print(f"模型: {MODEL_PATH}")
-    print(f"阈值: {CLASS_THRESHOLDS}")
-    print("=" * 70)
-    
-    # 打开视频
-    cap = cv2.VideoCapture(video_path)
-    
-    if not cap.isOpened():
-        print(f"❌ 无法打开视频: {video_path}")
-        return
-    
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
-    print(f"视频信息:")
-    print(f"  分辨率: {width}x{height}")
-    print(f"  帧率: {fps:.2f} FPS")
-    print(f"  总帧数: {total_frames}")
-    
-    print("按键说明:")
-    print("  SPACE - 暂停/继续")
-    print("  s     - 保存当前帧")
-    print("  r     - 重置统计")
-    print("  t     - 切换时序平滑")
-    print("  d     - 切换统计显示")
-    print("  q     - 退出")
-    print("=" * 70)
-    
-    # 构建 Pipeline
+def create_pipeline():
+    """创建推理pipeline"""
     pipeline = dai.Pipeline()
     
-    cam_rgb = pipeline.create(dai.node.ColorCamera)
-    monoLeft = pipeline.create(dai.node.MonoCamera)
-    monoRight = pipeline.create(dai.node.MonoCamera)
-    stereo = pipeline.create(dai.node.StereoDepth)
-    spatial_nn = pipeline.create(dai.node.YoloSpatialDetectionNetwork)
+    # 神经网络节点
+    nn = pipeline.create(dai.node.NeuralNetwork)
+    nn.setBlobPath(MODEL_PATH)
+    nn.setNumInferenceThreads(2)
+    nn.input.setBlocking(False)
     
-    xout_rgb = pipeline.create(dai.node.XLinkOut)
-    xout_rgb.setStreamName("rgb")
-    xout_nn = pipeline.create(dai.node.XLinkOut)
-    xout_nn.setStreamName("detections")
+    # 输入输出节点
+    xin = pipeline.create(dai.node.XLinkIn)
+    xin.setStreamName("in")
+    xout = pipeline.create(dai.node.XLinkOut)
+    xout.setStreamName("out")
     
-    cam_rgb.setPreviewSize(NN_INPUT_SIZE, NN_INPUT_SIZE)
-    cam_rgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
-    cam_rgb.setInterleaved(False)
-    cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
+    xin.out.link(nn.input)
+    nn.out.link(xout.input)
     
-    monoLeft.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
-    monoRight.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+    return pipeline
+
+def process_frame(frame, size=None):
+    """预处理帧"""
+    if size:
+        frame = cv2.resize(frame, (size, size))
+    return frame
+
+def main(video_path):
+    print(f"开始处理视频: {video_path}")
     
-    # 版本兼容处理
-    try:
-        monoLeft.setBoardSocket(dai.CameraBoardSocket.CAM_B)
-        monoRight.setBoardSocket(dai.CameraBoardSocket.CAM_C)
-    except AttributeError:
-        monoLeft.setBoardSocket(dai.CameraBoardSocket.LEFT)
-        monoRight.setBoardSocket(dai.CameraBoardSocket.RIGHT)
+    # 打开视频文件
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        print(f"无法打开视频: {video_path}")
+        return
     
-    try:
-        stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_QUALITY)
-    except AttributeError:
-        stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
+    # 获取视频信息
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
-    stereo.setLeftRightCheck(True)
-    stereo.setSubpixel(True)
+    print(f"视频信息: {frame_width}x{frame_height} @ {fps}fps")
     
-    try:
-        stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
-    except AttributeError:
-        stereo.setDepthAlign(dai.CameraBoardSocket.RGB)
+    # 创建pipeline
+    pipeline = create_pipeline()
     
-    spatial_nn.setBlobPath(MODEL_PATH)
-    spatial_nn.setConfidenceThreshold(0.3)
-    spatial_nn.input.setBlocking(False)
-    spatial_nn.setBoundingBoxScaleFactor(0.5)
-    spatial_nn.setDepthLowerThreshold(100)
-    spatial_nn.setDepthUpperThreshold(10000)
-    
-    spatial_nn.setNumClasses(len(LABEL_MAP))
-    spatial_nn.setCoordinateSize(4)
-    spatial_nn.setAnchors([10, 13, 16, 30, 33, 23, 30, 61, 62, 45, 59, 119, 116, 90, 156, 198, 373, 326])
-    spatial_nn.setAnchorMasks({"side52": [0, 1, 2], "side26": [3, 4, 5], "side13": [6, 7, 8]})
-    spatial_nn.setIouThreshold(0.5)
-    
-    monoLeft.out.link(stereo.left)
-    monoRight.out.link(stereo.right)
-    cam_rgb.preview.link(spatial_nn.input)
-    stereo.depth.link(spatial_nn.inputDepth)
-    
-    spatial_nn.passthrough.link(xout_rgb.input)
-    spatial_nn.out.link(xout_nn.input)
-    
-    # 启动设备
     try:
         with dai.Device(pipeline) as device:
-            print("\n✓ 设备连接成功\n")
+            print("设备已连接")
             
-            q_rgb = device.getOutputQueue("rgb", 4, False)
-            q_nn = device.getOutputQueue("detections", 4, False)
-            
-            smoother = TemporalSmoother(config.buffer_size, config.min_votes)
-            stats = DetectionStats()
+            # 获取输入输出队列
+            q_in = device.getInputQueue(name="in")
+            q_out = device.getOutputQueue(name="out")
             
             frame_count = 0
-            paused = False
             start_time = time.time()
             
-            cv2.namedWindow("Video", cv2.WINDOW_NORMAL)
-            cv2.namedWindow("OAK-D Detection", cv2.WINDOW_NORMAL)
+            cv2.namedWindow("Detection", cv2.WINDOW_NORMAL)
             
-            while True:
-                # 读取视频
-                ret, video_frame = cap.read()
+            while cap.isOpened():
+                ret, frame = cap.read()
                 if not ret:
-                    print("\n✓ 视频播放完毕")
                     break
                 
                 frame_count += 1
                 
-                # 显示视频
-                display = video_frame.copy()
-                progress = frame_count / total_frames if total_frames > 0 else 0
-                info = f"Frame: {frame_count}/{total_frames} ({progress*100:.1f}%)"
-                cv2.putText(display, info, (10, 30),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                cv2.imshow("Video", display)
+                # 预处理
+                processed = process_frame(frame, NN_INPUT_SIZE)
                 
-                if not paused:
-                    # OAK-D 检测
-                    in_rgb = q_rgb.get()
-                    in_nn = q_nn.get()
-                    
-                    oak_frame = in_rgb.getCvFrame()
-                    detections = in_nn.detections
-                    
-                    # 过滤
-                    filtered = []
-                    for det in detections:
-                        try:
-                            label = LABEL_MAP[det.label]
-                            if det.confidence >= CLASS_THRESHOLDS[label]:
-                                filtered.append(det)
-                        except:
-                            pass
-                    
-                    best_det = max(filtered, key=lambda x: x.confidence) if filtered else None
-                    
-                    # 时序平滑
-                    if config.use_temporal_smoothing:
-                        smoother.update(best_det)
-                        smoothed = smoother.get_smoothed_detection()
-                    else:
-                        smoothed = None
-                    
-                    # 显示检测
-                    oak_display = oak_frame.copy()
-                    
-                    if smoothed and smoothed['bbox'] is not None:
-                        label = LABEL_MAP[smoothed['label']]
-                        bbox = smoothed['bbox']
-                        
-                        x1 = int(bbox[0] * oak_frame.shape[1])
-                        y1 = int(bbox[1] * oak_frame.shape[0])
-                        x2 = int(bbox[2] * oak_frame.shape[1])
-                        y2 = int(bbox[3] * oak_frame.shape[0])
-                        
-                        color = (0, 255, 0) if label == 'Green' else (0, 0, 255) if label == 'Red' else (0, 255, 255)
-                        
-                        cv2.rectangle(oak_display, (x1, y1), (x2, y2), color, 3)
-                        
-                        text = f"{label} {smoothed['confidence']*100:.1f}%"
-                        vote = f"({smoothed['votes']}/{smoothed['total_frames']})"
-                        
-                        cv2.putText(oak_display, text, (x1, y1-30),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-                        cv2.putText(oak_display, vote, (x1, y1-10),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
-                        
-                        stats.update(label, smoothed['confidence'])
-                    
-                    oak_display = stats.draw_stats(oak_display)
-                    
-                    process_fps = frame_count / (time.time() - start_time)
-                    cv2.putText(oak_display, f"FPS: {process_fps:.1f}", 
-                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                    
-                    cv2.imshow("OAK-D Detection", oak_display)
+                # 准备输入
+                img = dai.ImgFrame()
+                img.setData(processed.transpose(2, 0, 1).flatten())
+                img.setWidth(NN_INPUT_SIZE)
+                img.setHeight(NN_INPUT_SIZE)
+                img.setType(dai.ImgFrame.Type.BGR888p)
                 
-                # 键盘
+                # 发送到设备
+                q_in.send(img)
+                
+                # 获取结果
+                result = q_out.get()
+                
+                # 处理检测结果
+                detections = np.array(result.getFirstLayerFp16()).reshape((-1, 7))
+                
+                # 显示结果
+                display = frame.copy()
+                
+                for detection in detections:
+                    if detection[2] > CLASS_THRESHOLDS[LABEL_MAP[int(detection[1])]]:
+                        label = LABEL_MAP[int(detection[1])]
+                        confidence = detection[2]
+                        
+                        # 转换坐标
+                        x1 = int(detection[3] * frame_width)
+                        y1 = int(detection[4] * frame_height)
+                        x2 = int(detection[5] * frame_width)
+                        y2 = int(detection[6] * frame_height)
+                        
+                        # 绘制检测框
+                        color = (0,255,0) if label == 'Green' else (0,0,255) if label == 'Red' else (0,255,255)
+                        cv2.rectangle(display, (x1, y1), (x2, y2), color, 2)
+                        cv2.putText(display, f"{label} {confidence:.2f}", 
+                                  (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                
+                # 显示进度
+                progress = frame_count / total_frames * 100
+                fps = frame_count / (time.time() - start_time)
+                cv2.putText(display, f"Progress: {progress:.1f}% FPS: {fps:.1f}", 
+                          (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                
+                cv2.imshow("Detection", display)
+                
                 key = cv2.waitKey(1)
-                
                 if key == ord('q'):
                     break
-                elif key == ord(' '):
-                    paused = not paused
-                    print(f"{'⏸ 暂停' if paused else '▶ 继续'}")
                 elif key == ord('s'):
-                    cv2.imwrite(f"frame_{frame_count:06d}.jpg", oak_display)
-                    print(f"✓ 已保存: frame_{frame_count:06d}.jpg")
-                elif key == ord('r'):
-                    stats = DetectionStats()
-                    smoother.reset()
-                    print("统计已重置")
-                elif key == ord('t'):
-                    config.use_temporal_smoothing = not config.use_temporal_smoothing
-                    print(f"时序平滑: {'开' if config.use_temporal_smoothing else '关'}")
-                elif key == ord('d'):
-                    config.show_stats = not config.show_stats
-                    print(f"统计显示: {'开' if config.show_stats else '关'}")
-            
-            cap.release()
-            
-            print("\n" + "=" * 70)
-            print("测试完成")
-            print("=" * 70)
-            print(f"处理帧数: {frame_count}")
-            print(f"\n检测统计:")
-            for label, count in stats.total_counts.items():
-                print(f"  {label}: {count} 次")
-            print("=" * 70)
+                    cv2.imwrite(f"frame_{frame_count:06d}.jpg", display)
+                    print(f"已保存帧: frame_{frame_count:06d}.jpg")
     
     except Exception as e:
-        print(f"\n❌ 错误: {e}")
+        print(f"错误: {e}")
         import traceback
         traceback.print_exc()
     
     finally:
+        cap.release()
         cv2.destroyAllWindows()
-        print("\n✓ 测试结束")
-
+        print("处理完成")
 
 if __name__ == '__main__':
-    if len(sys.argv) > 1:
-        video_path = sys.argv[1]
-    else:
-        print("用法: python script.py video.mp4")
+    if len(sys.argv) != 2:
+        print("使用方法: python script.py <video_path>")
         sys.exit(1)
     
+    video_path = sys.argv[1]
     main(video_path)
