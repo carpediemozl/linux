@@ -1,6 +1,6 @@
 """
-OAK-D 图片测试工具
-方法：在屏幕上全屏显示测试图片，用 OAK-D 拍摄屏幕进行检测
+OAK-D 视频测试工具 - 修复版
+修复了变量作用域问题和版本兼容性
 """
 
 import cv2
@@ -8,410 +8,398 @@ import depthai as dai
 import numpy as np
 import time
 from pathlib import Path
-from collections import Counter
-import subprocess
-import os
+from collections import deque, Counter
+import sys
 
 # --- 配置 ---
 MODEL_PATH = 'models/knottedblob/best10301nohue_openvino_2022.1_6shave.blob'
 LABEL_MAP = ['Green', 'Red', 'Yellow']
 NN_INPUT_SIZE = 416
 
-# 测试图片配置
-TEST_IMAGES_PATH = 'test_images_for_raspberry'  # 图片文件夹或 7z 文件
-SAVE_RESULTS = True
-RESULTS_DIR = 'test_results'
-
-# 检测阈值
 CLASS_THRESHOLDS = {
     'Green': 0.55,
     'Red': 0.50,
     'Yellow': 0.45
 }
 
-# 时序平滑
-USE_SMOOTHING = True
-BUFFER_SIZE = 5
-MIN_VOTES = 3
+# 这些变量会在运行时修改，使用类来管理
+class Config:
+    def __init__(self):
+        self.use_temporal_smoothing = True
+        self.buffer_size = 7
+        self.min_votes = 4
+        self.show_stats = True
+        self.show_confidence = True
+        self.save_output = False
+        self.output_path = 'output.mp4'
 
-# 显示模式
-FULLSCREEN = True  # 全屏显示测试图片
-AUTO_DETECT_TIMEOUT = 3.0  # 检测超时（秒）
-
-
-# --- 辅助函数 ---
-def extract_7z(archive_path):
-    """解压 7z 文件"""
-    try:
-        import py7zr
-        output_dir = archive_path.parent / (archive_path.stem + '_extracted')
-        output_dir.mkdir(exist_ok=True)
-        
-        print(f"解压 7z: {archive_path}")
-        with py7zr.SevenZipFile(archive_path, mode='r') as archive:
-            archive.extractall(path=output_dir)
-        
-        print(f"✓ 解压完成: {output_dir}")
-        return output_dir
-    except ImportError:
-        print("需要安装: pip install py7zr")
-        return None
-    except Exception as e:
-        print(f"解压失败: {e}")
-        return None
+config = Config()
 
 
-def find_images(path):
-    """查找所有图片"""
-    path = Path(path)
-    
-    # 处理 7z
-    if path.suffix == '.7z':
-        extract_dir = path.parent / (path.stem + '_extracted')
-        if extract_dir.exists():
-            path = extract_dir
-        else:
-            path = extract_7z(path)
-            if path is None:
-                return []
-    
-    # 查找图片
-    if path.is_dir():
-        extensions = ['.jpg', '.jpeg', '.png', '.bmp']
-        images = []
-        for ext in extensions:
-            images.extend(path.rglob(f'*{ext}'))
-            images.extend(path.rglob(f'*{ext.upper()}'))
-        return sorted(images)
-    
-    return [path] if path.is_file() else []
-
-
-def load_label(image_path):
-    """加载对应的标签文件"""
-    # 尝试多个可能的标签路径
-    possible_paths = [
-        image_path.parent / 'labels' / (image_path.stem + '.txt'),
-        image_path.parent / (image_path.stem + '.txt'),
-        image_path.parent.parent / 'labels' / (image_path.stem + '.txt')
-    ]
-    
-    for label_path in possible_paths:
-        if label_path.exists():
-            try:
-                with open(label_path, 'r') as f:
-                    lines = f.readlines()
-                
-                labels = []
-                for line in lines:
-                    parts = line.strip().split()
-                    if len(parts) >= 5:
-                        class_id = int(parts[0])
-                        bbox = list(map(float, parts[1:5]))
-                        labels.append({
-                            'class': LABEL_MAP[class_id] if class_id < len(LABEL_MAP) else 'unknown',
-                            'bbox': bbox
-                        })
-                return labels
-            except:
-                pass
-    
-    return None
-
-
+# --- 时序平滑类 ---
 class TemporalSmoother:
-    """时序平滑器"""
-    def __init__(self, buffer_size=5, min_votes=3):
+    def __init__(self, buffer_size=7, min_votes=4):
         self.buffer_size = buffer_size
         self.min_votes = min_votes
-        self.buffer = []
+        self.label_buffer = deque(maxlen=buffer_size)
+        self.conf_buffer = deque(maxlen=buffer_size)
+        self.bbox_buffer = deque(maxlen=buffer_size)
+        
+    def update(self, detection):
+        if detection is not None:
+            self.label_buffer.append(detection.label)
+            self.conf_buffer.append(detection.confidence)
+            bbox = [detection.xmin, detection.ymin, detection.xmax, detection.ymax]
+            self.bbox_buffer.append(bbox)
+        else:
+            self.label_buffer.append(None)
+            self.conf_buffer.append(0)
+            self.bbox_buffer.append(None)
     
-    def add(self, detection):
-        self.buffer.append(detection)
-        if len(self.buffer) > self.buffer_size:
-            self.buffer.pop(0)
-    
-    def get_result(self):
-        if len(self.buffer) < self.min_votes:
+    def get_smoothed_detection(self):
+        if len(self.label_buffer) < self.min_votes:
             return None
         
-        # 投票
-        valid_labels = [d['label'] for d in self.buffer if d is not None]
+        valid_labels = [l for l in self.label_buffer if l is not None]
         if len(valid_labels) < self.min_votes:
             return None
         
         label_counts = Counter(valid_labels)
-        most_common, votes = label_counts.most_common(1)[0]
+        most_common_label, vote_count = label_counts.most_common(1)[0]
         
-        if votes < self.min_votes:
+        if vote_count < self.min_votes:
             return None
         
-        # 平均置信度
-        confs = [d['confidence'] for d in self.buffer if d and d['label'] == most_common]
-        avg_conf = np.mean(confs) if confs else 0
+        label_confs = [self.conf_buffer[i] for i in range(len(self.label_buffer)) 
+                       if self.label_buffer[i] == most_common_label]
+        avg_confidence = np.mean(label_confs) if label_confs else 0
+        
+        label_bboxes = [self.bbox_buffer[i] for i in range(len(self.label_buffer))
+                        if self.label_buffer[i] == most_common_label and self.bbox_buffer[i] is not None]
+        
+        if label_bboxes:
+            avg_bbox = np.mean(label_bboxes, axis=0)
+        else:
+            avg_bbox = None
         
         return {
-            'label': most_common,
-            'confidence': avg_conf,
-            'votes': f"{votes}/{len(self.buffer)}"
+            'label': most_common_label,
+            'confidence': avg_confidence,
+            'bbox': avg_bbox,
+            'votes': vote_count,
+            'total_frames': len(self.label_buffer)
         }
     
     def reset(self):
-        self.buffer.clear()
+        self.label_buffer.clear()
+        self.conf_buffer.clear()
+        self.bbox_buffer.clear()
 
 
-# --- 主程序 ---
-print("=" * 70)
-print("OAK-D 图片批量测试工具")
-print("=" * 70)
-
-# 查找图片
-images = find_images(TEST_IMAGES_PATH)
-
-if not images:
-    print(f"❌ 未找到图片: {TEST_IMAGES_PATH}")
-    exit(1)
-
-print(f"\n找到 {len(images)} 张图片")
-print(f"模型: {MODEL_PATH}")
-print(f"阈值: {CLASS_THRESHOLDS}")
-print("=" * 70)
-
-# 创建结果目录
-if SAVE_RESULTS:
-    results_dir = Path(RESULTS_DIR)
-    results_dir.mkdir(exist_ok=True)
-
-# 构建 Pipeline
-print("\n构建 Pipeline...")
-pipeline = dai.Pipeline()
-
-cam_rgb = pipeline.create(dai.node.ColorCamera)
-monoLeft = pipeline.create(dai.node.MonoCamera)
-monoRight = pipeline.create(dai.node.MonoCamera)
-stereo = pipeline.create(dai.node.StereoDepth)
-spatial_nn = pipeline.create(dai.node.YoloSpatialDetectionNetwork)
-
-xout_rgb = pipeline.create(dai.node.XLinkOut)
-xout_rgb.setStreamName("rgb")
-xout_nn = pipeline.create(dai.node.XLinkOut)
-xout_nn.setStreamName("detections")
-
-cam_rgb.setPreviewSize(NN_INPUT_SIZE, NN_INPUT_SIZE)
-cam_rgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
-cam_rgb.setInterleaved(False)
-cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
-
-monoLeft.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
-monoLeft.setBoardSocket(dai.CameraBoardSocket.LEFT)
-monoRight.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
-monoRight.setBoardSocket(dai.CameraBoardSocket.RIGHT)
-
-stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
-stereo.setDepthAlign(dai.CameraBoardSocket.RGB)
-
-spatial_nn.setBlobPath(MODEL_PATH)
-spatial_nn.setConfidenceThreshold(0.3)
-spatial_nn.input.setBlocking(False)
-spatial_nn.setBoundingBoxScaleFactor(0.5)
-spatial_nn.setDepthLowerThreshold(100)
-spatial_nn.setDepthUpperThreshold(10000)
-
-spatial_nn.setNumClasses(len(LABEL_MAP))
-spatial_nn.setCoordinateSize(4)
-spatial_nn.setAnchors([10, 13, 16, 30, 33, 23, 30, 61, 62, 45, 59, 119, 116, 90, 156, 198, 373, 326])
-spatial_nn.setAnchorMasks({"side52": [0, 1, 2], "side26": [3, 4, 5], "side13": [6, 7, 8]})
-spatial_nn.setIouThreshold(0.5)
-
-monoLeft.out.link(stereo.left)
-monoRight.out.link(stereo.right)
-cam_rgb.preview.link(spatial_nn.input)
-stereo.depth.link(spatial_nn.inputDepth)
-
-spatial_nn.passthrough.link(xout_rgb.input)
-spatial_nn.out.link(xout_nn.input)
-
-print("\n按键说明:")
-print("  SPACE  - 下一张")
-print("  b      - 上一张")
-print("  c      - 开始检测当前图片")
-print("  s      - 保存结果")
-print("  q      - 退出")
-print("  1-6    - 调整阈值")
-print("=" * 70)
-
-# --- 测试循环 ---
-try:
-    with dai.Device(pipeline) as device:
-        print("\n✓ 设备连接成功\n")
+# --- 统计类 ---
+class DetectionStats:
+    def __init__(self):
+        self.history = {label: deque(maxlen=300) for label in LABEL_MAP}
+        self.total_counts = {label: 0 for label in LABEL_MAP}
+        self.confidence_history = deque(maxlen=100)
         
-        q_rgb = device.getOutputQueue("rgb", 4, False)
-        q_nn = device.getOutputQueue("detections", 4, False)
+    def update(self, label, confidence):
+        for l in LABEL_MAP:
+            self.history[l].append(1 if l == label else 0)
+        self.total_counts[label] += 1
+        self.confidence_history.append(confidence)
+    
+    def get_recent_distribution(self, frames=30):
+        counts = {}
+        for label in LABEL_MAP:
+            if len(self.history[label]) >= frames:
+                counts[label] = sum(list(self.history[label])[-frames:])
+            else:
+                counts[label] = sum(self.history[label])
+        return counts
+    
+    def draw_stats(self, frame, x=10, y=100):
+        if not config.show_stats:
+            return frame
         
-        smoother = TemporalSmoother(BUFFER_SIZE, MIN_VOTES)
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (x-5, y-25), (x+300, y+150), (0, 0, 0), -1)
+        frame = cv2.addWeighted(overlay, 0.6, frame, 0.4, 0)
         
-        # 统计
-        results_log = []
+        cv2.putText(frame, "Stats (Last 30 frames)", 
+                   (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         
-        idx = 0
-        detecting = False
-        detect_start_time = 0
+        recent = self.get_recent_distribution(30)
+        y_offset = y + 25
         
-        # 创建显示窗口
-        cv2.namedWindow("Test Image", cv2.WINDOW_NORMAL)
-        if FULLSCREEN:
-            cv2.setWindowProperty("Test Image", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        for label in LABEL_MAP:
+            count = recent[label]
+            total = self.total_counts[label]
+            
+            if label == 'Green':
+                color = (0, 255, 0)
+            elif label == 'Red':
+                color = (0, 0, 255)
+            else:
+                color = (0, 255, 255)
+            
+            text = f"{label}: {count}/30 (Total: {total})"
+            cv2.putText(frame, text, (x, y_offset), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            
+            bar_width = int(count / 30 * 200)
+            cv2.rectangle(frame, (x, y_offset+5), (x+200, y_offset+15), (50, 50, 50), -1)
+            cv2.rectangle(frame, (x, y_offset+5), (x+bar_width, y_offset+15), color, -1)
+            
+            y_offset += 30
         
-        cv2.namedWindow("OAK-D View", cv2.WINDOW_NORMAL)
-        
-        while idx < len(images):
-            img_path = images[idx]
+        return frame
+
+
+# --- 主函数 ---
+def main(video_path):
+    print("=" * 70)
+    print("OAK-D 视频测试工具")
+    print("=" * 70)
+    print(f"视频源: {video_path}")
+    print(f"模型: {MODEL_PATH}")
+    print(f"阈值: {CLASS_THRESHOLDS}")
+    print("=" * 70)
+    
+    # 打开视频
+    cap = cv2.VideoCapture(video_path)
+    
+    if not cap.isOpened():
+        print(f"❌ 无法打开视频: {video_path}")
+        return
+    
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    print(f"视频信息:")
+    print(f"  分辨率: {width}x{height}")
+    print(f"  帧率: {fps:.2f} FPS")
+    print(f"  总帧数: {total_frames}")
+    
+    print("按键说明:")
+    print("  SPACE - 暂停/继续")
+    print("  s     - 保存当前帧")
+    print("  r     - 重置统计")
+    print("  t     - 切换时序平滑")
+    print("  d     - 切换统计显示")
+    print("  q     - 退出")
+    print("=" * 70)
+    
+    # 构建 Pipeline
+    pipeline = dai.Pipeline()
+    
+    cam_rgb = pipeline.create(dai.node.ColorCamera)
+    monoLeft = pipeline.create(dai.node.MonoCamera)
+    monoRight = pipeline.create(dai.node.MonoCamera)
+    stereo = pipeline.create(dai.node.StereoDepth)
+    spatial_nn = pipeline.create(dai.node.YoloSpatialDetectionNetwork)
+    
+    xout_rgb = pipeline.create(dai.node.XLinkOut)
+    xout_rgb.setStreamName("rgb")
+    xout_nn = pipeline.create(dai.node.XLinkOut)
+    xout_nn.setStreamName("detections")
+    
+    cam_rgb.setPreviewSize(NN_INPUT_SIZE, NN_INPUT_SIZE)
+    cam_rgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
+    cam_rgb.setInterleaved(False)
+    cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
+    
+    monoLeft.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+    monoRight.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+    
+    # 版本兼容处理
+    try:
+        monoLeft.setBoardSocket(dai.CameraBoardSocket.CAM_B)
+        monoRight.setBoardSocket(dai.CameraBoardSocket.CAM_C)
+    except AttributeError:
+        monoLeft.setBoardSocket(dai.CameraBoardSocket.LEFT)
+        monoRight.setBoardSocket(dai.CameraBoardSocket.RIGHT)
+    
+    try:
+        stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_QUALITY)
+    except AttributeError:
+        stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
+    
+    stereo.setLeftRightCheck(True)
+    stereo.setSubpixel(True)
+    
+    try:
+        stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
+    except AttributeError:
+        stereo.setDepthAlign(dai.CameraBoardSocket.RGB)
+    
+    spatial_nn.setBlobPath(MODEL_PATH)
+    spatial_nn.setConfidenceThreshold(0.3)
+    spatial_nn.input.setBlocking(False)
+    spatial_nn.setBoundingBoxScaleFactor(0.5)
+    spatial_nn.setDepthLowerThreshold(100)
+    spatial_nn.setDepthUpperThreshold(10000)
+    
+    spatial_nn.setNumClasses(len(LABEL_MAP))
+    spatial_nn.setCoordinateSize(4)
+    spatial_nn.setAnchors([10, 13, 16, 30, 33, 23, 30, 61, 62, 45, 59, 119, 116, 90, 156, 198, 373, 326])
+    spatial_nn.setAnchorMasks({"side52": [0, 1, 2], "side26": [3, 4, 5], "side13": [6, 7, 8]})
+    spatial_nn.setIouThreshold(0.5)
+    
+    monoLeft.out.link(stereo.left)
+    monoRight.out.link(stereo.right)
+    cam_rgb.preview.link(spatial_nn.input)
+    stereo.depth.link(spatial_nn.inputDepth)
+    
+    spatial_nn.passthrough.link(xout_rgb.input)
+    spatial_nn.out.link(xout_nn.input)
+    
+    # 启动设备
+    try:
+        with dai.Device(pipeline) as device:
+            print("\n✓ 设备连接成功\n")
             
-            # 读取测试图片
-            test_img = cv2.imread(str(img_path))
-            if test_img is None:
-                print(f"❌ 无法读取: {img_path}")
-                idx += 1
-                continue
+            q_rgb = device.getOutputQueue("rgb", 4, False)
+            q_nn = device.getOutputQueue("detections", 4, False)
             
-            # 加载标签
-            gt_labels = load_label(img_path)
+            smoother = TemporalSmoother(config.buffer_size, config.min_votes)
+            stats = DetectionStats()
             
-            # 显示测试图片（在屏幕上全屏显示，让 OAK-D 拍摄）
-            display_img = test_img.copy()
+            frame_count = 0
+            paused = False
+            start_time = time.time()
             
-            # 添加信息
-            info = f"[{idx+1}/{len(images)}] {img_path.name}"
-            cv2.putText(display_img, info, (20, 40),
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            cv2.namedWindow("Video", cv2.WINDOW_NORMAL)
+            cv2.namedWindow("OAK-D Detection", cv2.WINDOW_NORMAL)
             
-            if gt_labels:
-                gt_text = "GT: " + ", ".join([l['class'] for l in gt_labels])
-                cv2.putText(display_img, gt_text, (20, 80),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-            
-            status = "检测中..." if detecting else "按 C 开始检测"
-            cv2.putText(display_img, status, (20, 120),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255) if detecting else (255, 255, 255), 2)
-            
-            cv2.imshow("Test Image", display_img)
-            
-            # 获取 OAK-D 视图
-            in_rgb = q_rgb.get()
-            in_nn = q_nn.get()
-            
-            oak_frame = in_rgb.getCvFrame()
-            detections = in_nn.detections
-            
-            # 过滤检测
-            filtered = []
-            for det in detections:
-                try:
-                    label = LABEL_MAP[det.label]
-                    if det.confidence >= CLASS_THRESHOLDS[label]:
-                        filtered.append({
-                            'label': label,
-                            'confidence': det.confidence,
-                            'bbox': [det.xmin, det.ymin, det.xmax, det.ymax]
-                        })
-                except:
-                    pass
-            
-            # 显示 OAK-D 视图
-            oak_display = oak_frame.copy()
-            
-            # 如果正在检测
-            if detecting:
-                if filtered:
-                    smoother.add(filtered[0] if filtered else None)
+            while True:
+                # 读取视频
+                ret, video_frame = cap.read()
+                if not ret:
+                    print("\n✓ 视频播放完毕")
+                    break
                 
-                # 检测超时
-                if time.time() - detect_start_time > AUTO_DETECT_TIMEOUT:
-                    result = smoother.get_result()
+                frame_count += 1
+                
+                # 显示视频
+                display = video_frame.copy()
+                progress = frame_count / total_frames if total_frames > 0 else 0
+                info = f"Frame: {frame_count}/{total_frames} ({progress*100:.1f}%)"
+                cv2.putText(display, info, (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                cv2.imshow("Video", display)
+                
+                if not paused:
+                    # OAK-D 检测
+                    in_rgb = q_rgb.get()
+                    in_nn = q_nn.get()
                     
-                    if result:
-                        print(f"\n[{idx+1}] 检测结果: {result['label']} ({result['confidence']:.2f}) {result['votes']}")
+                    oak_frame = in_rgb.getCvFrame()
+                    detections = in_nn.detections
+                    
+                    # 过滤
+                    filtered = []
+                    for det in detections:
+                        try:
+                            label = LABEL_MAP[det.label]
+                            if det.confidence >= CLASS_THRESHOLDS[label]:
+                                filtered.append(det)
+                        except:
+                            pass
+                    
+                    best_det = max(filtered, key=lambda x: x.confidence) if filtered else None
+                    
+                    # 时序平滑
+                    if config.use_temporal_smoothing:
+                        smoother.update(best_det)
+                        smoothed = smoother.get_smoothed_detection()
                     else:
-                        print(f"\n[{idx+1}] 无检测结果")
+                        smoothed = None
                     
-                    if gt_labels:
-                        gt_str = ", ".join([l['class'] for l in gt_labels])
-                        print(f"     真实标签: {gt_str}")
+                    # 显示检测
+                    oak_display = oak_frame.copy()
                     
-                    results_log.append({
-                        'image': img_path.name,
-                        'predicted': result['label'] if result else None,
-                        'ground_truth': gt_labels
-                    })
+                    if smoothed and smoothed['bbox'] is not None:
+                        label = LABEL_MAP[smoothed['label']]
+                        bbox = smoothed['bbox']
+                        
+                        x1 = int(bbox[0] * oak_frame.shape[1])
+                        y1 = int(bbox[1] * oak_frame.shape[0])
+                        x2 = int(bbox[2] * oak_frame.shape[1])
+                        y2 = int(bbox[3] * oak_frame.shape[0])
+                        
+                        color = (0, 255, 0) if label == 'Green' else (0, 0, 255) if label == 'Red' else (0, 255, 255)
+                        
+                        cv2.rectangle(oak_display, (x1, y1), (x2, y2), color, 3)
+                        
+                        text = f"{label} {smoothed['confidence']*100:.1f}%"
+                        vote = f"({smoothed['votes']}/{smoothed['total_frames']})"
+                        
+                        cv2.putText(oak_display, text, (x1, y1-30),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                        cv2.putText(oak_display, vote, (x1, y1-10),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+                        
+                        stats.update(label, smoothed['confidence'])
                     
-                    detecting = False
-                    smoother.reset()
-            
-            # 绘制检测框
-            for det in filtered:
-                x1 = int(det['bbox'][0] * oak_frame.shape[1])
-                y1 = int(det['bbox'][1] * oak_frame.shape[0])
-                x2 = int(det['bbox'][2] * oak_frame.shape[1])
-                y2 = int(det['bbox'][3] * oak_frame.shape[0])
+                    oak_display = stats.draw_stats(oak_display)
+                    
+                    process_fps = frame_count / (time.time() - start_time)
+                    cv2.putText(oak_display, f"FPS: {process_fps:.1f}", 
+                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    
+                    cv2.imshow("OAK-D Detection", oak_display)
                 
-                label = det['label']
-                color = (0, 255, 0) if label == 'Green' else (0, 0, 255) if label == 'Red' else (0, 255, 255)
+                # 键盘
+                key = cv2.waitKey(1)
                 
-                cv2.rectangle(oak_display, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(oak_display, f"{label} {det['confidence']:.2f}",
-                           (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-            
-            cv2.imshow("OAK-D View", oak_display)
-            
-            # 键盘控制
-            key = cv2.waitKey(50)
-            
-            if key == ord('q'):
-                break
-            elif key == ord(' '):
-                idx += 1
-                detecting = False
-                smoother.reset()
-            elif key == ord('b'):
-                idx = max(0, idx - 1)
-                detecting = False
-                smoother.reset()
-            elif key == ord('c'):
-                if not detecting:
-                    print(f"\n开始检测: {img_path.name}")
-                    detecting = True
-                    detect_start_time = time.time()
+                if key == ord('q'):
+                    break
+                elif key == ord(' '):
+                    paused = not paused
+                    print(f"{'⏸ 暂停' if paused else '▶ 继续'}")
+                elif key == ord('s'):
+                    cv2.imwrite(f"frame_{frame_count:06d}.jpg", oak_display)
+                    print(f"✓ 已保存: frame_{frame_count:06d}.jpg")
+                elif key == ord('r'):
+                    stats = DetectionStats()
                     smoother.reset()
-            elif key == ord('s'):
-                if SAVE_RESULTS:
-                    result_path = results_dir / f"result_{img_path.name}"
-                    cv2.imwrite(str(result_path), oak_display)
-                    print(f"✓ 已保存: {result_path}")
-            elif key >= ord('1') and key <= ord('6'):
-                # 阈值调整（同之前）
-                pass
-        
-        # 显示统计
-        print("\n" + "=" * 70)
-        print("测试完成")
-        print("=" * 70)
-        print(f"测试图片数: {len(results_log)}")
-        
-        # 保存日志
-        if results_log:
-            log_path = results_dir / 'test_log.txt'
-            with open(log_path, 'w') as f:
-                for r in results_log:
-                    f.write(f"{r}\n")
-            print(f"日志已保存: {log_path}")
-        
-        print("=" * 70)
+                    print("统计已重置")
+                elif key == ord('t'):
+                    config.use_temporal_smoothing = not config.use_temporal_smoothing
+                    print(f"时序平滑: {'开' if config.use_temporal_smoothing else '关'}")
+                elif key == ord('d'):
+                    config.show_stats = not config.show_stats
+                    print(f"统计显示: {'开' if config.show_stats else '关'}")
+            
+            cap.release()
+            
+            print("\n" + "=" * 70)
+            print("测试完成")
+            print("=" * 70)
+            print(f"处理帧数: {frame_count}")
+            print(f"\n检测统计:")
+            for label, count in stats.total_counts.items():
+                print(f"  {label}: {count} 次")
+            print("=" * 70)
+    
+    except Exception as e:
+        print(f"\n❌ 错误: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    finally:
+        cv2.destroyAllWindows()
+        print("\n✓ 测试结束")
 
-except Exception as e:
-    print(f"\n❌ 错误: {e}")
-    import traceback
-    traceback.print_exc()
 
-finally:
-    cv2.destroyAllWindows()
-    print("\n✓ 测试结束")
+if __name__ == '__main__':
+    if len(sys.argv) > 1:
+        video_path = sys.argv[1]
+    else:
+        print("用法: python script.py video.mp4")
+        sys.exit(1)
+    
+    main(video_path)
