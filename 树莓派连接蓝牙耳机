@@ -1,0 +1,32 @@
+sudo systemctl restart bluetooth
+sudo systemctl status bluetooth
+
+knotted@nomad:~ $ sudo systemctl status bluetooth
+● bluetooth.service - Bluetooth service
+     Loaded: loaded (/lib/systemd/system/bluetooth.service; enabled; vendor pre>
+     Active: active (running) since Wed 2025-11-05 05:57:00 GMT; 47s ago
+       Docs: man:bluetoothd(8)
+   Main PID: 3203 (bluetoothd)
+     Status: "Running"
+      Tasks: 1 (limit: 3933)
+        CPU: 59ms
+     CGroup: /system.slice/bluetooth.service
+             └─3203 /usr/libexec/bluetooth/bluetoothd
+
+Nov 05 05:57:00 nomad bluetoothd[3203]: Bluetooth daemon 5.55
+Nov 05 05:57:00 nomad systemd[1]: Started Bluetooth service.
+Nov 05 05:57:00 nomad bluetoothd[3203]: Starting SDP server
+Nov 05 05:57:00 nomad bluetoothd[3203]: Bluetooth management interface 1.22 ini>
+Nov 05 05:57:00 nomad bluetoothd[3203]: profiles/sap/server.c:sap_server_regist>
+Nov 05 05:57:00 nomad bluetoothd[3203]: sap-server: Operation not permitted (1)
+Nov 05 05:57:00 nomad bluetoothd[3203]: Failed to set privacy: Rejected (0x0b)
+Nov 05 05:57:00 nomad bluetoothd[3203]: Endpoint registered: sender=:1.29 path=>
+Nov 05 05:57:00 nomad bluetoothd[3203]: Endpoint registered: sender=:1.29 path=>
+Nov 05 05:57:05 nomad bluetoothd[3203]: src/profile.c:record_cb() Unable to get>
+lines 1-21/21 (END)
+
+问题src/profile.c:record_cb() Unable to get connect data for Headset Voice gateway: 这句是关键！ 它明确指出了在尝试连接 "Headset Voice gateway"（耳机的语音通话功能）时失败了。这直接与您的耳机连接问题相关。
+方案：sudo apt-get install pulseaudio-module-bluetooth
+systemctl --user restart pulseaudio
+sudo systemctl restart bluetooth
+连接成功
