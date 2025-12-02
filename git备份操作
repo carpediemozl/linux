@@ -3,3 +3,118 @@ git status
 git add .
 git commit -m "Feat: Refactor all visual pipelines to modern DepthAI API"
 git push
+
+
+
+祝贺你成功打通了 GitHub 备份流程！这不仅保护了你的代码，也为你后续在不同设备（PC/树莓派）间同步代码打下了基础。
+
+这份**《树莓派项目 GitHub 备份操作手册（HTTPS + Token 版）》**是基于你刚才踩过的坑总结的“避坑版”，请妥善保存。
+
+一、 准备工作（只做一次）
+
+获取 Token：
+
+GitHub 网页 -> Settings -> Developer settings -> Personal access tokens (classic) -> Generate new token。
+
+关键点： 勾选 repo 权限，生成的 ghp_xxxx 开头的字符串立刻复制保存（这就是你的专用密码）。
+
+二、 首次上传流程（新项目初始化）
+
+如果你在树莓派上新建了一个文件夹，想第一次传上去，按顺序执行这些命令：
+
+1. 初始化与身份设置
+
+code
+Bash
+download
+content_copy
+expand_less
+cd ~/你的项目文件夹
+rm -rf .git                         # 如果之前搞乱了，先清空旧配置
+git init                            # 初始化仓库
+git branch -M main                  # 统一分支名为 main
+
+# 告诉 Git 你是谁（必做，否则报错）
+git config --global user.email "你的GitHub注册邮箱"
+git config --global user.name "carpediemozl"
+
+2. 解决网络报错（关键步骤）
+针对树莓派常见的 gnutls_handshake 或 Recv failure 错误：
+
+code
+Bash
+download
+content_copy
+expand_less
+git config --global http.sslVerify false  # 关闭 SSL 验证，解决握手失败
+git config --global --unset http.proxy    # 清除可能存在的代理
+git config --global --unset https.proxy
+
+3. 关联远程仓库
+
+code
+Bash
+download
+content_copy
+expand_less
+# 使用 HTTPS 地址
+git remote add origin https://github.com/carpediemozl/ghost-probe-detection.git
+
+4. 保存密码（免得每次都输）
+
+code
+Bash
+download
+content_copy
+expand_less
+git config --global credential.helper store
+
+5. 提交并推送
+
+code
+Bash
+download
+content_copy
+expand_less
+git add .
+git commit -m "Initial backup"
+git push -u origin main
+
+输入 Username： carpediemozl
+
+输入 Password： 粘贴你的 Token（注意：粘贴时屏幕不会有任何反应，直接回车即可）。
+
+三、 日常备份流程（以后每天做）
+
+配置好之后，以后你改了代码，只需要执行这 3 行命令 就能备份：
+
+code
+Bash
+download
+content_copy
+expand_less
+git add .                           # 1. 把所有修改加入暂存区
+git commit -m "这里写你改了什么"      # 2. 提交并写备注（比如：优化了红外显示）
+git push                            # 3. 推送到云端
+四、 常见报错速查
+
+报错： Author identity unknown
+
+解法： 重新运行 git config --global user.email ... 和 user.name ...。
+
+报错： gnutls_handshake / TLS connection failed
+
+解法： 运行 git config --global http.sslVerify false。
+
+报错： remote origin already exists
+
+解法： 运行 git remote remove origin，然后重新 git remote add ...。
+
+报错： Authentication failed
+
+解法： Token 过期了或粘贴错了，去 GitHub 重新生成一个 Token，再次 Push 时输入新的。
+
+建议把这段总结保存在你的电脑或手机备忘录里，下次换新板子或者新项目，照着敲一遍就行！祝项目开发顺利！
+
+
+sudo systemctl status mihomo 查看vpn状态
