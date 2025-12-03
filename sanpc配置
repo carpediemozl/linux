@@ -1,0 +1,187 @@
+鉴于您使用的是 Ubuntu 25.04（这是一个非常新的版本，可能包含最新的系统库和内核），强烈建议您使用 Flatpak 方式安装。
+安装微信
+chrome为正常安装
+nvidia-smi
+查看显卡是否正常运作
+
+安装docker 配置ros1
+
+
+sudo apt update
+sudo apt install -y docker.io
+
+
+
+这条指令确实很长，因为它不仅要启动一个系统，还要打通显卡、网络、显示器这三座大山。
+
+你可以把它想象成**“装修新房”**的清单。如果不写这些参数，你得到的只是一个没网、没显卡、没显示器的“毛坯房”。
+
+我把这条指令拆解成 5 个核心板块 来详细解释：
+
+1. 基础启动 (建房子)
+code
+Bash
+download
+content_copy
+expand_less
+sudo docker run -it --name ros1_dev ... bash
+
+docker run: 告诉 Docker：“给我创建一个新容器”。
+
+-it: 这是两个参数 -i (Interactive) 和 -t (TTY)。
+
+人话：“我要进到里面去”。如果不加这个，容器启动后会在后台默默运行，你没有任何地方可以输入命令。
+
+--name ros1_dev: 给这个容器起个名字叫 ros1_dev。
+
+重要：如果不写这行，Docker 会随机给它起个名字（比如 goofy_hoover），下次你想开机根本找不到它。
+
+bash (最后一行): 容器启动后执行的第一个程序。这里指启动一个命令行终端。
+
+2. 网络配置 (通水电)
+code
+Bash
+download
+content_copy
+expand_less
+--net=host
+
+含义：让容器和你的宿主机（Ubuntu 25.04）共用同一个 IP 地址。
+
+为什么 ROS 必须用它？
+
+ROS 的通信机制（Master/Node）非常复杂，需要随机开启很多端口。
+
+如果不加这行，容器会被隔离在一个虚拟局域网里，想连接外部的机器人或者传感器会非常痛苦（需要手动映射几十个端口）。
+
+加了这行，容器里的网络就和你的真机一模一样，即插即用。
+
+3. 显卡直通 (装显卡)
+code
+Bash
+download
+content_copy
+expand_less
+--gpus all \
+--env="NVIDIA_DRIVER_CAPABILITIES=all"
+
+--gpus all: 把你电脑上的所有显卡（RTX 5070 Ti）借给容器使用。
+
+--env="NVIDIA_...": 设置环境变量。
+
+告诉驱动程序：“我不仅要用这块显卡做计算（CUDA），还要用它做图形渲染（Display/Graphics）”。如果没有这行，Rviz 可能会报错或者跑不动。
+
+4. 图形界面穿透 (接显示器)
+
+这是最长、最容易看不懂的部分，目的是让容器里的软件（如 Rviz）能画在你外面的屏幕上。
+
+code
+Bash
+download
+content_copy
+expand_less
+--env="DISPLAY" \
+--volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
+--env="QT_X11_NO_MITSHM=1"
+
+--env="DISPLAY":
+
+告诉容器：“你要显示的画面，请发到宿主机的屏幕上来”。（它会自动读取你宿主机的 $DISPLAY 变量，通常是 :0 或 :1）。
+
+--volume="/tmp/.X11-unix:...":
+
+打洞。把宿主机的 X11 通信管道（Socket 文件）直接映射进容器。这是图形数据传输的物理通道。
+
+--env="QT_X11_NO_MITSHM=1":
+
+防崩补丁。Rviz 是用 Qt 写的。在 Docker 和宿主机共享内存机制不同步时，Qt 程序极其容易闪退。这行命令是强制关闭 Qt 的共享内存扩展，保证 Rviz 不崩溃。
+
+5. 系统镜像 (选操作系统)
+code
+Bash
+download
+content_copy
+expand_less
+osrf/ros:noetic-desktop-full
+
+这是你要安装的系统盘。
+
+osrf/ros: 官方仓库。
+
+noetic: ROS 1 的版本代号（对应 Ubuntu 20.04）。
+
+desktop-full: 全家桶版。里面预装了 ROS 核心、Rviz、Gazebo 仿真器以及各种常用的感知/导航包。
+
+💡 进阶：如何保存你的代码？(挂载目录)
+
+目前的指令有一个小缺点：你在容器里写的代码，是保存在容器里面的。 虽然容器不删代码就在，但如果你手滑删了容器，代码就丢了。
+
+强烈建议在指令中加入下面这一行（加在 docker run 后面）：
+
+code
+Bash
+download
+content_copy
+expand_less
+-v /home/nwu508/ros_code:/root/catkin_ws
+
+含义：把宿主机的 /home/nwu508/ros_code 文件夹，映射到容器里的 /root/catkin_ws。
+
+效果：
+
+你在 Ubuntu 25.04 的桌面上就能直接看到和编辑代码。
+
+如果不小心删除了容器，代码依然安全地躺在你的硬盘里。
+
+总结：完整版（带代码保存功能）
+
+如果你想重新创建一个完美的开发环境，可以使用这个终极版指令（假设你想把代码存在 ~/ros_workspace）：
+
+code
+Bash
+download
+content_copy
+expand_less
+sudo docker run -it \
+    --name ros1_dev \
+    --net=host \
+    --gpus all \
+    --env="NVIDIA_DRIVER_CAPABILITIES=all" \
+    --env="DISPLAY" \
+    --env="QT_X11_NO_MITSHM=1" \
+    --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
+    osrf/ros:noetic-desktop-full \
+    bash
+
+(注：请确保你先在宿主机创建了 /home/nwu508/ros_workspace 这个文件夹)
+
+
+
+
+
+exit
+
+
+新建一个容器
+允许 Docker 使用本地屏幕 (重要！)
+xhost +local:root
+
+启动容器
+sudo docker run -it \
+    --name ros1_dev \
+    --net=host \
+    --gpus all \
+    --env="NVIDIA_DRIVER_CAPABILITIES=all" \
+    --env="DISPLAY" \
+    --env="QT_X11_NO_MITSHM=1" \
+    --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
+    osrf/ros:noetic-desktop-full \
+    bash
+第二行ros1_dev为自定义名字 可更改
+
+删除容器
+sudo docker stop ros1_dev
+sudo docker rm ros1_dev
+
+查看镜像
+sudo docker images
