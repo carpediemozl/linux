@@ -210,3 +210,17 @@ roslaunch ghost_eyes start.launch
 在oakd_node中使用opencv先画好图 再打包给rviz
 新建oakd_node2 
 新建start_visual.launch
+
+'''已经完成了oakd的ros1接入'''
+
+
+开始tiny1-c的ros1接入
+
+Tiny1-C 的接入逻辑比 OAK-D 简单得多，因为它在 Linux 下就是一个标准的 UVC 摄像头（像网络摄像头一样）。
+我们需要写一个节点，做两件事：
+读取数据： 用 OpenCV 打开摄像头，强制设为 256x192。
+处理发布： 把原始数据归一化（拉伸对比度），变成伪彩色图像发布给 ROS，方便你在 Rviz 里看。
+
+
+创建scripts/tiny1c_node.py
+创建launch/tiny_only.launch
