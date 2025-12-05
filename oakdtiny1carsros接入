@@ -192,3 +192,21 @@ oak_rgb_frame
     <!-- $(find ghost_eyes) 会自动找到你的包路径 -->
     <node name="rviz" pkg="rviz" type="rviz" args="-d $(find ghost_eyes)/rviz/oakd.rviz" />
 </launch>
+
+
+
+打开一个新的docker终端
+cd /root/catkin_ws
+catkin_make
+source devel/setup.bash
+roslaunch ghost_eyes start.launch
+
+
+运行一会就会断开的问题
+如果连接不稳就换成usb 2.0 现在是usb3.0
+在oakd_node.py文件里修改
+
+验证mobilenet的检测效果
+在oakd_node中使用opencv先画好图 再打包给rviz
+新建oakd_node2 
+新建start_visual.launch
