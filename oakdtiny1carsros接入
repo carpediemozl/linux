@@ -1,0 +1,194 @@
+# 1. 添加 OAK-D 的 USB 规则 (这一步必须在宿主机做！)
+echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="03e7", MODE="0666"' | sudo tee /etc/udev/rules.d/80-movidius.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+
+
+sudo docker run -it \
+    --name ros1_dev \
+    --net=host \
+    --gpus all \
+    --env="NVIDIA_DRIVER_CAPABILITIES=all" \
+    --env="DISPLAY" \
+    --env="QT_X11_NO_MITSHM=1" \
+    --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
+    osrf/ros:noetic-desktop-full \
+    bash
+
+先前创建容器的命令
+
+sudo docker rm -f ros1_dev
+删除之前的旧容器
+
+sudo docker run -it \
+    --name ros1_dev \
+    --net=host \
+    --privileged \
+    --gpus all \
+    --env="NVIDIA_DRIVER_CAPABILITIES=all" \
+    --env="DISPLAY=$DISPLAY" \
+    --env="QT_X11_NO_MITSHM=1" \
+    --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
+    --volume="/dev/bus/usb:/dev/bus/usb" \
+    osrf/ros:noetic-desktop-full \
+    bash
+
+
+做了哪些关键修改？
+--volume="/dev/bus/usb:/dev/bus/usb" (新增)
+作用： 把 Ubuntu 25.04 宿主机的所有 USB 接口“借”给 Docker 容器用。
+后果： 如果不加这一句，你在容器里输入 lsusb 是空的，OAK-D 和 Tiny1-C 根本连不上。
+--privileged (新增)
+作用： 给容器“超级管理员”权限，允许它直接控制硬件设备。
+OAK-D 必选： OAK-D 启动时，USB ID 会从 03e7:2485 (Bootloader) 变成 03e7:f63b (Myriad X)。普通容器会因为安全限制阻止这种“变身”，导致程序崩溃。只有加了 --privileged 才能平滑过渡。
+DISPLAY=$DISPLAY (微调)
+你之前写的是 --env="DISPLAY"，这依赖于宿主机环境变量是否透传。写成 --env="DISPLAY=$DISPLAY" 更稳妥，确保 Rviz 能弹出来。
+
+
+
+# 3. 允许本地 X11 显示（每次重启电脑后可能都需要输这一句，为了让 Docker 能弹窗）
+xhost +local:root
+
+
+
+sudo docker run -it \
+    --name ros1_dev \
+    --net=host \
+    --privileged \
+    --gpus all \
+    --env="NVIDIA_DRIVER_CAPABILITIES=all" \
+    --env="DISPLAY=$DISPLAY" \
+    --env="QT_X11_NO_MITSHM=1" \
+    --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
+    --volume="/dev/bus/usb:/dev/bus/usb" \
+    --volume="/home/$(whoami)/knotted3:/root/catkin_ws/src" \
+    osrf/ros:noetic-desktop-full \
+    bash
+
+
+--volume="/home/...:/root/catkin_ws/src"：这是灵魂。它把你在宿主机建立的 my_ghost_project 文件夹，直接映射到了容器里的 /root/catkin_ws/src。
+
+
+apt update
+apt install -y python3-pip git wget nano usbutils
+
+# 安装 OAK-D ROS 驱动
+apt install -y ros-noetic-depthai-ros
+
+# 安装 Python 库 (给 Tiny1-C 和 融合算法用)
+pip3 install opencv-python depthai numpy
+
+pip install depthai==2.28.0.0
+
+# 进入工作空间根目录
+cd /root/catkin_ws/
+
+# 第一次编译（虽然 src 是空的，但这一步会生成 build 和 devel 文件夹）
+catkin_make
+
+# 把环境生效命令写入 .bashrc (这样下次进容器不用手动 source)
+echo "source /opt/ros/noetic/setup.bash" >> ~/.bashrc
+echo "source /root/catkin_ws/devel/setup.bash" >> ~/.bashrc
+source ~/.bashrc
+
+
+
+# 进入源码目录
+cd /root/catkin_ws/src
+
+# 创建功能包 (包名: ghost_eyes，依赖: rospy, cv_bridge, sensor_msgs, vision_msgs)
+# vision_msgs 是专门用来发检测框（Bounding Box）的标准消息类型
+catkin_create_pkg ghost_eyes rospy std_msgs sensor_msgs cv_bridge vision_msgs image_transport
+
+# 回到工作空间根目录编译一下
+cd /root/catkin_ws
+catkin_make
+source devel/setup.bash
+
+
+sudo chown -R $USER:$USER ~/knotted3
+vscode创建scripts文件夹
+授予权限
+
+
+你的挂载命令是：
+--volume="/home/knottedzz/knotted3:/root/catkin_ws/src"
+knotted3文件夹里看到的是 /root/catkin_ws/src 里面的内容
+
+编译失败 
+编译回到catkin_ws文件夹前缀
+apt install ros-noetic-vision-msgs
+apt install ros-noetic-image-transport
+catkin_make
+
+
+
+调试方法
+端口1
+roscore
+
+端口2
+# 进入正在运行的容器
+sudo docker exec -it ros1_dev bash
+source /root/catkin_ws/devel/setup.bash 每次都要刷新环境 打开新终端
+rosrun ghost_eyes oakd_node.py
+
+终端3 rviz
+
+
+之前oakd_node里面是yolov4tiny 模型 锚点配置有问题
+后面换成MobileNet-SSD 版
+
+
+source /root/catkin_ws/devel/setup.bash
+source /root/catkin_ws/devel/setup.bash
+source /root/catkin_ws/devel/setup.bash
+！！！
+
+
+第四个终端 验证yolo/mobilenet是否在工作
+关闭rviz
+再打开一个终端
+source /root/catkin_ws/devel/setup.bash
+rostopic echo /ghost/camera/detections
+
+理论输出：
+results: 
+  - 
+    id: 15  <-- (MobileNet-SSD里 15代表 Person)
+    score: 0.9823...
+    pose: 
+      pose: 
+        position: 
+          x: 0.152  <-- (横向坐标 0.15米)
+          y: 0.201
+          z: 1.543  <-- (深度坐标 1.54米)
+
+
+
+launch方法
+ghost_eyes/
+├── CMakeLists.txt
+├── package.xml
+├── scripts/
+│   └── oakd_node.py
+└── rviz/  <-- 新建的空文件夹
+保存 oakd.rviz
+topic depth and rgb
+oak_rgb_frame
+
+编写Launch文件实现一键启动
+在 ghost_eyes 文件夹下，新建文件夹 launch。
+在 launch 文件夹里，新建文件 start.launch。
+
+<launch>
+    <!-- 1. 启动 OAK-D 驱动节点 -->
+    <node name="oakd_driver" pkg="ghost_eyes" type="oakd_node.py" output="screen" />
+
+    <!-- 2. 发布一个静态坐标变换 (修复 Rviz 里的黄色警告) -->
+    <!-- 这里的参数 0 0 0 0 0 0 代表相机相对于世界坐标系没有偏移 -->
+    <node pkg="tf" type="static_transform_publisher" name="link1_broadcaster" args="0 0 0 0 0 0 map oak_rgb_frame 100" />
+
+    <!-- 3. 启动 Rviz，并加载我们保存的配置文件 -->
+    <!-- $(find ghost_eyes) 会自动找到你的包路径 -->
+    <node name="rviz" pkg="rviz" type="rviz" args="-d $(find ghost_eyes)/rviz/oakd.rviz" />
+</launch>
