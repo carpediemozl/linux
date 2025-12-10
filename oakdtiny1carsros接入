@@ -224,3 +224,32 @@ Tiny1-C 的接入逻辑比 OAK-D 简单得多，因为它在 Linux 下就是一�
 
 创建scripts/tiny1c_node.py
 创建launch/tiny_only.launch
+
+
+
+
+sudo docker stop knotted3_ros1
+sudo docker start knotted3_ros1
+sudo docker exec -it knotted3_ros1 bash
+cd root/catkin_ws
+source devel/setup.bash
+xhost +local:root //容器外使用 允许rviz显示 rviz报错时用
+
+LAUNCH
+roslaunch ghost_eyes start.launch //oakd最初始版本 不用管
+roslaunch ghost_eyes strat_visual.launch  //oakd带框版本 标定不用
+roslaunch ghost_eyes tiny_only.launch //只有热传感器版本
+roslaunch ghost_eyes dual_cam.launch // 双传感器版本
+roslaunch ghost_eyes calibration.launch //oakd红外标定
+
+
+SCRIPTS
+oakd_node //初始版本 
+oakd_node2 //带mobilenet识别
+tiny1c_node //红外
+oakd_calib_node //输出1920x1080给标定用
+calibration_node //标定用（红外和oakd）OPENCV方法
+
+标定
+roslaunch ghost_eyes calibration.launch  //发布话题
+rosrun ghost_eyes calibtation_node.py //opencv棋盘格标定
