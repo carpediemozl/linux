@@ -227,7 +227,6 @@ Tiny1-C 的接入逻辑比 OAK-D 简单得多，因为它在 Linux 下就是一�
 
 
 
-
 sudo docker stop knotted3_ros1
 sudo docker start knotted3_ros1
 sudo docker exec -it knotted3_ros1 bash
@@ -241,6 +240,7 @@ roslaunch ghost_eyes strat_visual.launch  //oakd带框版本 标定不用
 roslaunch ghost_eyes tiny_only.launch //只有热传感器版本
 roslaunch ghost_eyes dual_cam.launch // 双传感器版本
 roslaunch ghost_eyes calibration.launch //oakd红外标定
+oakd_at20.launch //at20和oakd显示
 
 
 SCRIPTS
@@ -249,7 +249,33 @@ oakd_node2 //带mobilenet识别
 tiny1c_node //红外
 oakd_calib_node //输出1920x1080给标定用
 calibration_node //标定用（红外和oakd）OPENCV方法
+at20_node //at20驱动接口
+oakd_at20_time 计算时间差 未完成
+
 
 标定
 roslaunch ghost_eyes calibration.launch  //发布话题
 rosrun ghost_eyes calibtation_node.py //opencv棋盘格标定
+
+
+rostopic echo /at20/image --noarr -n 1
+
+chmod +x knotted3/ghost_eyes/scripts/oakd_at20_time.py
+
+
+
+========================================
+📷 OAK-D 出厂内参 (RGB 1080P)
+========================================
+
+内参矩阵 (mtx_rgb):
+np.array([
+    [1513.98876953, 0.00000000, 970.27874756],
+    [0.00000000, 1514.04125977, 548.69775391],
+    [0.00000000, 0.00000000, 1.00000000]
+])
+
+畸变系数 (dist_rgb):
+np.array([-3.819533348083496, 9.725564002990723, 0.00023930289898999035, -6.547127850353718e-05, -5.249636173248291, -3.904806613922119, 10.002168655395508, -5.539272785186768, 0.0, 0.0, 0.0, 0.0, 0.0027119372971355915, 0.0020668236538767815])
+
+
