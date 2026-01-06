@@ -1,0 +1,24 @@
+sudo apt update
+sudo apt install libimobiledevice-1.0-6 libimobiledevice-utils usbmuxd
+安装必要工具 
+
+idevice_id -l
+查看ipad是否连接上 （信任）
+
+https://github.com/H-M-H/Weylus/releases
+下载weylus
+
+sudo chmod 666 /dev/uinput
+
+
+
+sudo killall weylus
+
+
+nano ~/.bashrc
+
+# 修改前：
+# alias ros='sudo docker start knotted3_ros1 && sudo docker exec -it knotted3_ros1 bash'
+
+# 修改后（加上 xhost +local:root）：
+alias ros='xhost +local:root && sudo docker start knotted3_ros1 && sudo docker exec -it knotted3_ros1 bash'
