@@ -22,3 +22,6 @@ nano ~/.bashrc
 
 # 修改后（加上 xhost +local:root）：
 alias ros='xhost +local:root && sudo docker start knotted3_ros1 && sudo docker exec -it knotted3_ros1 bash'
+
+
+source ~/.bashrc 刷新环境
