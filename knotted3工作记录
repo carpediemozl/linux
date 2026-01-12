@@ -1,0 +1,240 @@
+sudo docker stop knotted3_ros1
+sudo docker start knotted3_ros1
+sudo docker exec -it knotted3_ros1 bash
+cd root/catkin_ws
+source devel/setup.bash
+xhost +local:root //容器外使用 允许rviz显示 rviz报错时用
+
+LAUNCH
+roslaunch ghost_eyes start.launch //oakd最初始版本 不用管
+roslaunch ghost_eyes strat_visual.launch  //oakd带框版本 标定不用
+roslaunch ghost_eyes tiny_only.launch //只有热传感器版本
+roslaunch ghost_eyes dual_cam.launch // 双传感器版本
+roslaunch ghost_eyes calibration.launch //oakd红外标定
+oakd_at20.launch //at20和oakd显示
+
+
+SCRIPTS
+oakd_node //初始版本 
+oakd_node2 //带mobilenet识别
+tiny1c_node //红外
+oakd_calib_node //输出1920x1080给标定用
+calibration_node //标定用（红外和oakd）OPENCV方法
+at20_node //at20驱动接口
+oakd_at20_time 计算时间差 未完成
+
+
+标定
+roslaunch ghost_eyes calibration.launch  //发布话题
+rosrun ghost_eyes calibtation_node.py //opencv棋盘格标定
+
+
+rostopic echo /at20/image --noarr -n 1
+rostopic echo ghost/camera/rgb/image_raw --noarr -n 1
+rostopic echo ghost/camera/depth --noarr -n 1
+/camera/color/camera_info
+
+chmod +x knotted3/ghost_eyes/scripts/oakd_at20_time.py
+
+root@nwu508:~/catkin_ws/src/ghost_eyes/scripts# python3 get_oakd_neican.py
+
+oakdlite内参
+==================== RGB 相机 (CAM_A) ====================
+分辨率: 1920x1080
+内参 K:
+[[1.51398877e+03 0.00000000e+00 9.70278748e+02]
+ [0.00000000e+00 1.51404126e+03 5.48697754e+02]
+ [0.00000000e+00 0.00000000e+00 1.00000000e+00]]
+畸变 D:
+[-3.81953335e+00  9.72556400e+00  2.39302899e-04 -6.54712785e-05
+ -5.24963617e+00 -3.90480661e+00  1.00021687e+01 -5.53927279e+00
+  0.00000000e+00  0.00000000e+00  0.00000000e+00  0.00000000e+00
+  2.71193730e-03  2.06682365e-03]
+
+==================== 左目相机 (CAM_B) ====================
+分辨率: 1280x800
+内参 K:
+[[913.87158203   0.         635.44451904]
+ [  0.         913.77593994 361.61581421]
+ [  0.           0.           1.        ]]
+畸变 D:
+[ 1.72726913e+02 -1.41478912e+02  1.19181082e-03  4.00151293e-05
+ -5.28036213e+00  1.73451111e+02 -1.44960922e+02 -1.21323252e+00
+  0.00000000e+00  0.00000000e+00  0.00000000e+00  0.00000000e+00
+ -2.27809120e-02 -1.06282765e-02]
+
+==================== 右目相机 (CAM_C) ====================
+分辨率: 1280x800
+内参 K:
+[[910.37145996   0.         637.83691406]
+ [  0.         909.98968506 367.08950806]
+ [  0.           0.           1.        ]]
+畸变 D:
+[-1.47158504e+00 -1.11757565e+00  4.22924844e-04  3.41769395e-04
+  1.86233723e+00 -1.48641455e+00 -1.07820296e+00  1.83672798e+00
+  0.00000000e+00  0.00000000e+00  0.00000000e+00  0.00000000e+00
+  5.96160651e-04  3.01197474e-03]
+
+==================== 双目外参 (Extrinsics) ====================
+平移向量 (cm): [0.9999639987945557, -0.005338540766388178, 0.006592229474335909, -7.497389793395996]
+双目基线长度: 7.5638 cm
+============================================================
+
+
+//at20自标定内参
+【内参矩阵 K】:
+np.array([
+    [1077.5143, 0.0000, 509.6022],
+    [0.0000, 1078.3386, 401.5388],
+    [0.0000, 0.0000, 1.0000]
+])
+
+【畸变系数 D】:
+np.array([[-0.17642399915130383, -0.8432217805023153, 0.006976622424716727, 1.678996179553042e-05, 2.84794787077967]])
+
+
+rosclean purge //清除roslaunch日志 本质无影响
+
+
+oakd_node.py
+oakd_only.launch
+oak_rgb_frame
+话题：RGB DEPTH left/right pointcloud
+    pub_jpeg = rospy.Publisher('/ghost/camera/rgb/compressed', CompressedImage, queue_size=10)
+    pub_raw = rospy.Publisher('/ghost/camera/rgb/image_raw', Image, queue_size=10)
+    pub_depth = rospy.Publisher('/ghost/camera/depth', Image, queue_size=10)
+    
+at20_node.py
+at20_noly.launch
+at20_link 
+
+采集总数据
+rosbag record -O /root/catkin_ws/src/ghost_full_01.bag \
+  /ghost/camera/rgb/compressed \
+  /ghost/camera/depth \
+  /at20/image \
+  /PointCloudDetection \
+  /ObjectList \
+  /DetectionList \
+  /odomData \
+  /tf \
+  /tf_static
+  
+mv ghost_scene_01.bag src/
+
+BAG_FILE = '/root/catkin_ws/src/ghost_full_01.bag' 
+OUTPUT_DIR = '/root/catkin_ws/src/output_data_full'
+
+kalibr标定oakd和at20
+rosbag record -O /root/catkin_ws/src/kalibr_data1.bag /ghost/camera/rgb/image_raw /at20/image
+# 请把文件名和话题名替换成你实际的
+rosrun kalibr kalibr_calibrate_cameras \
+  --target /root/catkin_ws/src/checkerboard.yaml \
+  --bag /root/catkin_ws/src/kalibr_data1.bag \
+  --models pinhole-radtan pinhole-radtan \
+  --topics /ghost/camera/rgb/image_raw /at20/image \
+  --approx-sync 0.1 \
+  --dont-show-report
+  
+at20出厂参数
+cam_model: Pinhole
+cam_width: 1024
+cam_height: 768
+scale: 0.5
+cam_fx: 1070.287275517697
+cam_fy: 1068.83782664444
+cam_cx: 505.7981222619705
+cam_cy: 384.1756802758743
+cam_d0: -0.2316642298967188
+cam_d1: -0.1188670523616654
+cam_d2: 0.006184213300577792
+cam_d3: 0.02029374020896657
+
+
+
+# 将路径下的所有文件所有者改回当前登录用户
+sudo chown -R $USER:$USER /home/san/knotted3
+
+sudo nano /etc/gdm3/custom.conf
+wayland x11
+echo $XDG_SESSION_TYPE //查看输出类型
+
+
+RGB和livox标定
+采集
+rosrun pcl_ros pointcloud_to_pcd input:=/livox/lidar
+pcl_viewer 你的文件名.pcd
+pcl_concatenate_points_pcd *.pcd //合成累计点云
+python3 cap_oakd.py //采集rgb画面
+
+roslaunch livox_camera_calib calib.launch //运行标定
+rqt_bag <你的数据包>.bag
+
+
+openclib
+
+./bin/run_lidar2camera data/oakd_1.jpg data/oakd_1_thin.pcd data/intrinsic_oakd.json data/extrinsic_oakd.json
+pcl_voxel_grid oakd_1.pcd oakd_1_thin.pcd -leaf 0.03,0.03,0.03  //-leaf 0.05 代表每 5 厘米只保留一个点
+touch CATKIN_IGNORE 建立屏蔽 防止launch文件无法启动 sensorcalibration问题
+rospack profile //ros刷新缓存
+
+
+[-0.0376562, -0.998185, -0.0470073, 0.0101005],
+[0.0940815, 0.0432904, -0.994623, 0.070633],
+[0.994852, -0.0418762, 0.0922805, -0.0118925],
+[0.0, 0.0, 0.0, 1.0]
+                    
+Transfromation Matrix:
+-0.0397566  -0.999052 -0.0177302  0.0160706
+ 0.0678605  0.0150037  -0.997582  0.0848825
+  0.996902 -0.0408636  0.0671997 -0.0308383
+         0          0          0          1
+
+
+
+
+Extrinsic:
+R:
+-0.0397566 -0.999052 -0.0177302
+0.0678605 0.0150037 -0.997582
+0.996902 -0.0408636 0.0671997
+t: 0.0160706 0.0848825 -0.0308383
+
+Intrinsic:
+905.973 0 636.041
+0 905.887 372.002
+0 0 1
+************* json format *************
+Extrinsic:
+[-0.0397566,-0.999052,-0.0177302,0.0160706],[0.0678605,0.0150037,-0.997582,0.0848825],[0.996902,-0.0408636,0.0671997,-0.0308383],[0,0,0,1]
+
+Intrinsic:
+[905.973,0,636.041],[0,905.887,372.002],[0,0,1]
+
+Distortion:
+[0,0,0,0]
+
+#蹲下
+==>Save Result 0
+Transfromation Matrix:
+  0.0716788   -0.997241  -0.0193062  -0.0652761
+-0.00350138   0.0191043   -0.999811  -0.0411374
+   0.997422   0.0717329  -0.0021222  -0.0400655
+          0           0           0           1
+#棋盘格不动
+==>Save Result 0
+Transfromation Matrix:
+  0.0765517   -0.997026 -0.00892065  -0.0270781
+ -0.0109494  0.00810577   -0.999907   0.0377431
+   0.997006   0.0766423  -0.0102962   -0.101747
+          0           0           0           1
+
+## oakd2lidar
+==>Save Result 1
+Transfromation Matrix:
+-0.00185658   -0.999997   0.0019325       -0.09
+ -0.0527133 -0.00183191   -0.998608        0.12
+   0.998608 -0.00195591  -0.0527095       -0.07
+          0           0           0           1
+
+	
