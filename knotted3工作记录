@@ -154,7 +154,7 @@ cam_d3: 0.02029374020896657
 
 # 将路径下的所有文件所有者改回当前登录用户
 sudo chown -R $USER:$USER /home/san/knotted3
-
+nano ~/.bashrc
 sudo nano /etc/gdm3/custom.conf
 wayland x11
 echo $XDG_SESSION_TYPE //查看输出类型
@@ -179,12 +179,8 @@ touch CATKIN_IGNORE 建立屏蔽 防止launch文件无法启动 sensorcalibratio
 rospack profile //ros刷新缓存
 
 
-[-0.0376562, -0.998185, -0.0470073, 0.0101005],
-[0.0940815, 0.0432904, -0.994623, 0.070633],
-[0.994852, -0.0418762, 0.0922805, -0.0118925],
-[0.0, 0.0, 0.0, 1.0]
-                    
-Transfromation Matrix:
+
+d435i 外参
 -0.0397566  -0.999052 -0.0177302  0.0160706
  0.0678605  0.0150037  -0.997582  0.0848825
   0.996902 -0.0408636  0.0671997 -0.0308383
@@ -230,11 +226,55 @@ Transfromation Matrix:
           0           0           0           1
 
 ## oakd2lidar
-==>Save Result 1
+==>Save Result 2
 Transfromation Matrix:
--0.00185658   -0.999997   0.0019325       -0.09
- -0.0527133 -0.00183191   -0.998608        0.12
-   0.998608 -0.00195591  -0.0527095       -0.07
+-0.00185658   -0.999993 -0.00330347  -0.0899778
+ -0.0527133  0.00339679   -0.998604     0.12063
+   0.998608  -0.0016799   -0.052719  -0.0819399
           0           0           0           1
 
-	
+
+
+
+
+
+rosbag record /livox/lidar -O lidar_calib.bag
+# 在文件夹下执行
+mkdir temp_pcd && cd temp_pcd
+rosrun pcl_ros pointcloud_to_pcd input:=/livox/lidar
+
+
+rostopic echo /PointCloudDetection | grep frame_id  //查看frame id
+
+
+./bin/run_radar2lidar data/livox2.pcd data/ars1.csv data/extrinsic.json
+
+rosbag record -O /root/catkin_ws/src/calib/outdoor_03.bag \
+    /livox/lidar \
+    /PointCloudDetection \
+    /tf \
+    /tf_static
+    
+    
+radar2lidar
+Transfromation Matrix:
+  0.999877  0.0157073          0  0.0699926
+-0.0157073   0.999877          0  -0.120942
+         0          0          1          0
+         0          0          0          1
+
+
+
+bag提取pcd和csv
+rosrun pcl_ros bag_to_pcd 0113_3.bag /livox/lidar temp_pcd_0113_3
+
+
+
+==>Save Result 3
+Transfromation Matrix:
+    0.999123    0.0418754 -0.000148292   -0.0499474
+  -0.0418757     0.999117  -0.00353813    -0.117487
+           0   0.00354124     0.999994            0
+           0            0            0            1
+
+
