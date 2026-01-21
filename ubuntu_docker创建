@@ -64,3 +64,13 @@ sudo docker inspect --format='{{.HostConfig.Privileged}}' knotted3_ros1   是否
 sudo docker inspect --format='{{.HostConfig.IpcMode}}' knotted3_ros1  检查通信内存
 sudo docker inspect --format='{{.HostConfig.PidMode}}' knotted3_ros1 进程透视
 sudo docker inspect --format='{{json .Mounts}}' knotted3_ros1 文件夹挂载
+
+gedit ~/.bashrc
+alias k3='xhost +local:root && sudo docker start knotted3_ros1 && sudo docker exec -it knotted3_ros1 bash'
+
+容器内
+apt-get update
+nano ~/.bashrc
+apt-get install nano -y
+source /opt/ros/noetic/setup.bash
+source /root/knotted3/devel/setup.bash
