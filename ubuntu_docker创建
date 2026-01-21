@@ -1,0 +1,49 @@
+lsb_release -a //查看系统版本
+No LSB modules are available.
+Distributor ID:	Ubuntu
+Description:	Ubuntu 22.04.5 LTS
+Release:	22.04
+Codename:	jammy
+nomadzz@nomadzz:~$ 
+
+
+nvidia-smi //查看显卡信息
+
+htop //查看cpu和内存
+
+为什么做 SLAM 必须用 ROS？
+Rviz (可视化工具)
+Rosbag (数据录制与回放)
+TF (坐标变换树)
+
+
+
+
+//允许 Docker使用本地屏幕
+xhost +local:root
+
+//创建容器
+sudo docker run -it \
+    --name knotted3_ros1 \
+    --net=host \
+    --privileged \
+    --ipc=host \
+    --pid=host \
+    --gpus all \
+    --env="NVIDIA_DRIVER_CAPABILITIES=all" \
+    --env="DISPLAY=$DISPLAY" \
+    --env="QT_X11_NO_MITSHM=1" \
+    --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
+    --volume="/dev:/dev" \
+    --volume="$HOME/knotted3:/root/knotted3" \
+    --workdir="/root/knotted3" \
+    osrf/ros:noetic-desktop-full \
+    bash
+    
+    
+ sudo docker rm -f knotted3_ros1 //删除容器
+ 
+ 
+ sudo gedit /etc/docker/daemon.json
+修改内容为空{} 直接走代理
+ osrf/ros:noetic-desktop-full //下载镜像太慢了
