@@ -1,3 +1,7 @@
+sudo apt update
+sudo apt install neofetch
+neofetch//查看硬件信息和版本
+
 lsb_release -a //查看系统版本
 No LSB modules are available.
 Distributor ID:	Ubuntu
@@ -47,3 +51,16 @@ sudo docker run -it \
  sudo gedit /etc/docker/daemon.json
 修改内容为空{} 直接走代理
  osrf/ros:noetic-desktop-full //下载镜像太慢了
+ osrf/ros:noetic-desktop-full 镜像，里面已经预装好了完整的 ROS 1、Rviz、Gazebo 以及各种依赖库
+ 
+ 
+ sudo pip install runlike
+# 把 knotted3_ros1 换成你的容器名字
+runlike knotted3_ros1
+runlike查看docker创建指令
+
+或者  
+sudo docker inspect --format='{{.HostConfig.Privileged}}' knotted3_ros1   是否打开特权
+sudo docker inspect --format='{{.HostConfig.IpcMode}}' knotted3_ros1  检查通信内存
+sudo docker inspect --format='{{.HostConfig.PidMode}}' knotted3_ros1 进程透视
+sudo docker inspect --format='{{json .Mounts}}' knotted3_ros1 文件夹挂载
